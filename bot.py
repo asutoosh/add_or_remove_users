@@ -415,6 +415,15 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        print("🚀 Starting Telegram bot...")
+        main()
+    except KeyboardInterrupt:
+        print("\n⚠️ Bot stopped by user")
+    except Exception as e:
+        print(f"❌ Fatal error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
 
 
