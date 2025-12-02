@@ -622,7 +622,7 @@ TRIAL_PAGE = """
         }
         
         // Verify tg_id is a valid number
-        if (!/^\d+$/.test(tgIdInput.value)) {
+        if (!/^\\d+$/.test(tgIdInput.value)) {
           if (loadingDiv) {
             loadingDiv.style.display = 'none';
           }

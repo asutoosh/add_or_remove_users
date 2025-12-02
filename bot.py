@@ -34,18 +34,22 @@ BASE_URL = os.environ.get("BASE_URL", "http://127.0.0.1:5000")
 
 # Validate required environment variables
 if not BOT_TOKEN:
-    print("❌ ERROR: BOT_TOKEN is missing!")
-    print("   Create a .env file in the same folder as bot.py with:")
-    print("   BOT_TOKEN=your_bot_token_here")
-    print("   BASE_URL=https://5dae2e012977.ngrok-free.app")
-    print("   TRIAL_CHANNEL_ID=-1003437011455")
-    exit(1)
+    error_msg = (
+        "❌ ERROR: BOT_TOKEN is missing!\n"
+        "   For Render: Set BOT_TOKEN in Render Dashboard → Your service → Environment\n"
+        "   For local: Create .env file with BOT_TOKEN=your_token"
+    )
+    print(error_msg)
+    raise RuntimeError("BOT_TOKEN is required but not set")
 
 if TRIAL_CHANNEL_ID == 0:
     print("⚠️  WARNING: TRIAL_CHANNEL_ID is not set (using 0)")
-    print("   Add TRIAL_CHANNEL_ID=your_channel_id to .env file")
+    print("   Set TRIAL_CHANNEL_ID in Render Dashboard → Environment (or .env for local)")
 
-print(f"✅ Bot starting with BASE_URL: {BASE_URL}")
+print(f"✅ Bot starting...")
+print(f"   BASE_URL: {BASE_URL}")
+print(f"   TRIAL_CHANNEL_ID: {TRIAL_CHANNEL_ID}")
+print(f"   BOT_TOKEN: {'*' * 10 if BOT_TOKEN else 'NOT SET'}")
 
 
 def _now_utc() -> datetime:
@@ -385,11 +389,7 @@ def main() -> None:
     Handlers remain async, but python-telegram-bot v21+ can manage the event
     loop internally via `run_polling()`.
     """
-    if not BOT_TOKEN:
-        raise RuntimeError(
-            "BOT_TOKEN is not set. Please configure it in your .env or environment variables."
-        )
-
+    # BOT_TOKEN is already validated at module level
     application = ApplicationBuilder().token(BOT_TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
