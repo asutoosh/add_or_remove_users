@@ -1,0 +1,37 @@
+# Environment variables
+.env
+.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# Storage files (local testing)
+pending_verifications.json
+trial_users.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Deployment guides (not needed in repo)
+*DEPLOYMENT*.md
+*deployment*.md
+deployment guide.md
+RENDER_DEPLOYMENT.md
+
