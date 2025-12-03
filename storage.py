@@ -8,6 +8,9 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 PENDING_FILE = os.path.join(BASE_DIR, "pending_verifications.json")
 TRIAL_LOG_FILE = os.path.join(BASE_DIR, "trial_users.json")
+USED_TRIALS_FILE = os.path.join(BASE_DIR, "used_trials.json")
+ACTIVE_TRIALS_FILE = os.path.join(BASE_DIR, "active_trials.json")
+INVITES_FILE = os.path.join(BASE_DIR, "invites.json")
 
 _lock = threading.Lock()
 
@@ -73,5 +76,86 @@ def append_trial_log(record: Dict[str, Any]) -> None:
         records: List[Dict[str, Any]] = _load_json(TRIAL_LOG_FILE, [])
         records.append(record)
         _save_json(TRIAL_LOG_FILE, records)
+
+
+def has_used_trial(tg_id: int) -> bool:
+    """
+    Check if a user has already consumed their free trial.
+    Data is stored in USED_TRIALS_FILE as a mapping of tg_id -> record.
+    """
+    with _lock:
+        data = _load_json(USED_TRIALS_FILE, {})
+        return str(tg_id) in data
+
+
+def mark_trial_used(tg_id: int, info: Dict[str, Any]) -> None:
+    """
+    Mark a user as having used their free trial.
+    This can be called when the trial period ends.
+    """
+    with _lock:
+        data = _load_json(USED_TRIALS_FILE, {})
+        data[str(tg_id)] = info
+        _save_json(USED_TRIALS_FILE, data)
+
+
+def get_all_active_trials() -> Dict[str, Any]:
+    """
+    Return all active trial records as a mapping of tg_id -> info.
+    """
+    with _lock:
+        data = _load_json(ACTIVE_TRIALS_FILE, {})
+        return data
+
+
+def get_active_trial(tg_id: int) -> Optional[Dict[str, Any]]:
+    """
+    Return active trial data for a user if present.
+    Stored as a mapping of tg_id -> {join_time, total_hours, ...}.
+    """
+    with _lock:
+        data = _load_json(ACTIVE_TRIALS_FILE, {})
+        return data.get(str(tg_id))
+
+
+def set_active_trial(tg_id: int, info: Dict[str, Any]) -> None:
+    """
+    Store or update active trial info for a user.
+    Called when the user joins the trial channel.
+    """
+    with _lock:
+        data = _load_json(ACTIVE_TRIALS_FILE, {})
+        data[str(tg_id)] = info
+        _save_json(ACTIVE_TRIALS_FILE, data)
+
+
+def clear_active_trial(tg_id: int) -> None:
+    """
+    Clear active trial info for a user.
+    Called when the trial ends or the user leaves.
+    """
+    with _lock:
+        data = _load_json(ACTIVE_TRIALS_FILE, {})
+        data.pop(str(tg_id), None)
+        _save_json(ACTIVE_TRIALS_FILE, data)
+
+
+def get_invite_info(tg_id: int) -> Optional[Dict[str, Any]]:
+    """
+    Get stored invite info for a user, if any.
+    """
+    with _lock:
+        data = _load_json(INVITES_FILE, {})
+        return data.get(str(tg_id))
+
+
+def set_invite_info(tg_id: int, info: Dict[str, Any]) -> None:
+    """
+    Store or update invite info for a user.
+    """
+    with _lock:
+        data = _load_json(INVITES_FILE, {})
+        data[str(tg_id)] = info
+        _save_json(INVITES_FILE, data)
 
 

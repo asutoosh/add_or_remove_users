@@ -21,7 +21,20 @@ from telegram.ext import (
     filters,
 )
 
-from storage import get_pending_verification, set_pending_verification, clear_pending_verification, append_trial_log
+from storage import (
+    get_pending_verification,
+    set_pending_verification,
+    clear_pending_verification,
+    append_trial_log,
+    has_used_trial,
+    mark_trial_used,
+    get_active_trial,
+    set_active_trial,
+    clear_active_trial,
+    get_all_active_trials,
+    get_invite_info,
+    set_invite_info,
+)
 
 
 # Load .env file (if present) into environment variables
@@ -31,6 +44,7 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 TRIAL_CHANNEL_ID = int(os.environ.get("TRIAL_CHANNEL_ID", "0"))
 BASE_URL = os.environ.get("BASE_URL", "http://127.0.0.1:5000")
 BLOCKED_PHONE_COUNTRY_CODE = os.environ.get("BLOCKED_PHONE_COUNTRY_CODE", "+91")
+TIMEZONE_OFFSET_HOURS = float(os.environ.get("TIMEZONE_OFFSET_HOURS", "0"))
 
 # Validate required environment variables for production deployment
 if not BOT_TOKEN:
@@ -56,9 +70,28 @@ def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _is_weekend(dt: datetime) -> bool:
+    """
+    Weekend check in local time (controlled via TIMEZONE_OFFSET_HOURS).
+    """
+    local_dt = dt + timedelta(hours=TIMEZONE_OFFSET_HOURS)
+    # 5 = Saturday, 6 = Sunday
+    return local_dt.weekday() >= 5
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     if not user or not update.message:
+        return
+
+    # If user already consumed their free trial, don't allow another one
+    if has_used_trial(user.id):
+        await update.message.reply_text(
+            "You have already used your free 3-day trial once.\n\n"
+            "🎁 For more chances, you can join our giveaway channel:\n"
+            "https://t.me/Freya_Trades\n\n"
+            "💬 Or DM @cogitosk to upgrade to the premium signals.",
+        )
         return
 
     keyboard = [
@@ -168,6 +201,100 @@ async def retry_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     )
 
 
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Help command explaining the bot and verification process."""
+    help_text = (
+        "🤖 *About This Bot*\n\n"
+        "This bot is used to manage users accessing premium content and services.\n\n"
+        "📋 *Available Commands:*\n"
+        "• /start - Start the bot and begin free trial\n"
+        "• /help - Help and commands list\n"
+        "• /faq - Frequently asked questions\n"
+        "• /about - About this bot\n"
+        "• /support - Contact support\n\n"
+        "🔐 *Verification Process:*\n\n"
+        "*Step 1: Initial Verification*\n"
+        "1. Click on /start command\n"
+        "2. A 'Get Free Trial' button will appear\n"
+        "3. Click on the button to open the verification page\n"
+        "4. Turn off VPN/Proxy before proceeding\n"
+        "5. IP test will happen automatically\n"
+        "6. Fill in your details:\n"
+        "   • Name (required)\n"
+        "   • Country (required)\n"
+        "   • Email (optional - you can delete later)\n"
+        "7. Close the Telegram mini-app\n\n"
+        "*Step 2: Phone Verification*\n"
+        "1. If Step 1 passed, click on 'Continue verification'\n"
+        "2. Click on 'Allow phone number access' button\n"
+        "   (We need this to confirm you're not a bot)\n"
+        "3. Share your phone number when prompted\n"
+        "4. You will receive a one-time premium group invite link\n"
+        "5. Join the group to access premium content\n\n"
+        "✅ Once both verifications are complete, you'll gain access to premium features!"
+    )
+    await update.message.reply_text(help_text, parse_mode="Markdown")
+
+
+async def faq_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """FAQ command with frequently asked questions."""
+    now = _now_utc()
+    is_weekend = _is_weekend(now)
+    
+    if is_weekend:
+        trial_days = "5 days"
+        trial_reason = "Since today is a weekend and the market is closed, you get 5 days of access."
+    else:
+        trial_days = "3 days"
+        trial_reason = "Since today is not a weekend, you get 3 days of access."
+    
+    faq_text = (
+        "❓ *Frequently Asked Questions*\n\n"
+        "1️⃣ *How many days can I use the free trial?*\n"
+        f"   You can use the free trial for {trial_days}. {trial_reason}\n\n"
+        "2️⃣ *Can I delete my information later?*\n"
+        "   Yes, absolutely! You can request deletion of your information at any time.\n\n"
+        "3️⃣ *Why do you need my phone number?*\n"
+        "   We need your phone number to verify that you're a real person and not a bot. "
+        "Your privacy is important to us, and we don't share your data with third parties.\n\n"
+        "4️⃣ *What if I can't access the premium group?*\n"
+        "   If you're having trouble accessing the group, please use /support command "
+        "to contact our team. We'll help you resolve the issue.\n\n"
+        "5️⃣ *Can I share the invite link with others?*\n"
+        "   No, the invite link is one-time use and unique to your account. "
+        "Please do not share it with others.\n\n"
+        "6️⃣ *What happens after my trial ends?*\n"
+        "   After your trial period ends, you'll need to upgrade to a paid plan "
+        "to continue accessing premium content and services."
+    )
+    await update.message.reply_text(faq_text, parse_mode="Markdown")
+
+
+async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """About command with brief description of the bot."""
+    about_text = (
+        "ℹ️ *About This Bot*\n\n"
+        "This bot helps manage access to premium content and services through a secure "
+        "verification process. We provide a free trial period so you can experience our "
+        "premium features before committing to a paid plan.\n\n"
+        "Our verification system ensures that only legitimate users can access premium "
+        "content, helping us maintain quality and prevent abuse.\n\n"
+        "For support or questions, use /support to contact our team."
+    )
+    await update.message.reply_text(about_text, parse_mode="Markdown")
+
+
+async def support_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Support command with contact form link."""
+    support_text = (
+        "🆘 *Support*\n\n"
+        "If you can't access the premium group or need assistance, please submit this form:\n\n"
+        "👉 https://forms.gle/CJbNczZ6BcKjk6Bz9\n\n"
+        "Our team will contact you shortly to help resolve your issue."
+    )
+    await update.message.reply_text(support_text, parse_mode="Markdown")
+
+
 async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.effective_user:
         return
@@ -207,19 +334,53 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     data["phone"] = phone
     set_pending_verification(user.id, data)
 
+    # Before generating a new invite link, check if user recently generated one
+    now = _now_utc()
+    invite_info = get_invite_info(user.id)
+    if invite_info and "invite_expires_at" in invite_info:
+        from datetime import datetime as _dt
+
+        try:
+            expires_at = _dt.fromisoformat(invite_info["invite_expires_at"])
+            if now < expires_at and invite_info.get("invite_link"):
+                # Existing invite still valid; ask user to reuse it
+                await update.message.reply_text(
+                    "You already generated a trial invite link recently.\n\n"
+                    "Please use this link to join the trial channel:\n"
+                    f"{invite_info['invite_link']}\n\n"
+                    "If you have any issues accessing it, use /support to contact us."
+                )
+                return
+        except Exception:
+            # If parsing fails, fall through and create a fresh link
+            pass
+
     await update.message.reply_text("Verification 2 passed ✅. Generating your one-time invite link...")
 
     bot = context.bot
     try:
+        # Expire invite link after 5 hours
+        expires_at_dt = now + timedelta(hours=5)
         invite_link = await bot.create_chat_invite_link(
             chat_id=TRIAL_CHANNEL_ID,
             member_limit=1,
+            expire_date=int(expires_at_dt.timestamp()),
         )
     except Exception as e:  # pragma: no cover - defensive
         await update.message.reply_text(
             "Failed to create an invite link. Please try again later."
         )
         return
+
+    # Store invite metadata so we don't generate unlimited fresh links
+    set_invite_info(
+        user.id,
+        {
+            "invite_link": invite_link.invite_link,
+            "invite_created_at": now.isoformat(),
+            "invite_expires_at": expires_at_dt.isoformat(),
+        },
+    )
 
     await update.message.reply_text(
         "Here is your one-time invite link to the private trial channel.\n"
@@ -240,13 +401,17 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         }
     )
 
-    # If you want to minimise stored sensitive data, you can clear the pending record here:
-    # clear_pending_verification(user.id)
+    # Clear pending verification record now that verification is complete
+    clear_pending_verification(user.id)
 
 
 def _is_weekend(dt: datetime) -> bool:
+    """
+    Weekend check in local time (controlled via TIMEZONE_OFFSET_HOURS).
+    """
+    local_dt = dt + timedelta(hours=TIMEZONE_OFFSET_HOURS)
     # 5 = Saturday, 6 = Sunday
-    return dt.weekday() >= 5
+    return local_dt.weekday() >= 5
 
 
 async def trial_chat_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -262,6 +427,26 @@ async def trial_chat_member_update(update: Update, context: ContextTypes.DEFAULT
     # Detect join: previously left/kicked, now member/admin
     if old.status in ("left", "kicked") and new.status in ("member", "administrator"):
         user = new.user
+
+        # If user has already used their trial, do not start another one
+        if has_used_trial(user.id):
+            await context.bot.send_message(
+                chat_id=user.id,
+                text=(
+                    "You have already used your free 3-day trial once.\n\n"
+                    "🎁 For more chances, you can join our giveaway channel:\n"
+                    "https://t.me/Freya_Trades\n\n"
+                    "💬 Or DM @cogitosk to upgrade to the premium signals."
+                ),
+            )
+            # Ensure they are not kept in the trial channel
+            try:
+                await context.bot.ban_chat_member(TRIAL_CHANNEL_ID, user.id)
+                await context.bot.unban_chat_member(TRIAL_CHANNEL_ID, user.id)
+            except Exception:
+                pass
+            return
+
         now = _now_utc()
 
         if _is_weekend(now):
@@ -270,6 +455,31 @@ async def trial_chat_member_update(update: Update, context: ContextTypes.DEFAULT
         else:
             trial_days = 3
             total_hours = 72
+
+        # If an active trial already exists and has not yet expired, avoid double-scheduling
+        existing = get_active_trial(user.id)
+        if existing and "trial_end_at" in existing:
+            from datetime import datetime as _dt
+
+            try:
+                end_at = _dt.fromisoformat(existing["trial_end_at"])
+                if now < end_at:
+                    # Trial is already running; do not re-start it
+                    return
+            except Exception:
+                pass
+
+        trial_end_at = now + timedelta(hours=total_hours)
+
+        # Track active trial so we can compute remaining hours if user leaves early and restore after restart
+        set_active_trial(
+            user.id,
+            {
+                "join_time": now.isoformat(),
+                "total_hours": total_hours,
+                "trial_end_at": trial_end_at.isoformat(),
+            },
+        )
 
         append_trial_log(
             {
@@ -328,6 +538,69 @@ async def trial_chat_member_update(update: Update, context: ContextTypes.DEFAULT
                 data={"user_id": user.id},
             )
 
+    # Detect user leaving during trial phase and send feedback form
+    if old.status in ("member", "administrator") and new.status in ("left", "kicked"):
+        # Ignore leaves caused by the bot itself (e.g. scheduled trial_end ban/unban)
+        try:
+            bot_user = await context.bot.get_me()
+        except Exception:
+            bot_user = None
+
+        # If the actor is the bot, don't send feedback (this is likely trial_end cleanup)
+        if bot_user and chat_member.from_user.id == bot_user.id:
+            return
+
+        user = old.user
+
+        # Try to compute how many trial hours they used and how many were remaining
+        remaining_info = ""
+        try:
+            active = get_active_trial(user.id)
+            if active and "join_time" in active and "total_hours" in active:
+                from datetime import datetime as _dt
+
+                join_time = _dt.fromisoformat(active["join_time"])
+                total_hours = float(active["total_hours"])
+                now = _now_utc()
+                elapsed_hours = (now - join_time).total_seconds() / 3600.0
+                remaining_hours = max(0.0, total_hours - elapsed_hours)
+
+                # Round for nicer display
+                elapsed_hours_rounded = round(elapsed_hours, 1)
+                remaining_hours_rounded = round(remaining_hours, 1)
+
+                remaining_info = (
+                    f"\n\nYou used about {elapsed_hours_rounded} hours "
+                    f"of your free trial and had about {remaining_hours_rounded} hours remaining."
+                )
+        except Exception as e:
+            print(f"⚠️ Failed to compute remaining trial hours for user_id={user.id}: {e}")
+
+        await context.bot.send_message(
+            chat_id=user.id,
+            text=(
+                "We noticed you left the trial channel before your trial finished.\n"
+                f"{remaining_info}\n\n"
+                "We hope you had a great time testing our signals 🙌\n"
+                "It would mean a lot if you could share quick feedback here:\n"
+                "https://forms.gle/K7ubyn2tvzuYeHXn9"
+            ),
+        )
+
+        # Treat this as a consumed trial as well
+        try:
+            mark_trial_used(
+                user.id,
+                {
+                    "left_early_at": _now_utc().isoformat(),
+                },
+            )
+        except Exception as e:
+            print(f"⚠️ Failed to mark trial used on early leave for user_id={user.id}: {e}")
+
+        # Clear active trial tracking since they left
+        clear_active_trial(user.id)
+
 
 async def trial_reminder_3day_1(context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = context.job.data["user_id"]
@@ -371,10 +644,34 @@ async def trial_reminder_5day_4(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def trial_end(context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = context.job.data["user_id"]
-    await context.bot.send_message(
-        chat_id=user_id,
-        text="⛔ Your trial has finished. If you enjoyed the signals, you can upgrade to a paid plan to continue.",
-    )
+    # Mark this user as having used their free trial first (JSON is the source of truth)
+    try:
+        mark_trial_used(
+            user_id,
+            {
+                "trial_ended_at": _now_utc().isoformat(),
+            },
+        )
+    except Exception as e:
+        # Do not crash job on storage issues; just log if needed
+        print(f"⚠️ Failed to mark trial as used for user_id={user_id}: {e}")
+
+    # Clear active trial tracking on natural trial end
+    clear_active_trial(user_id)
+
+    # Notify user and remove them from trial channel
+    try:
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=(
+                "⛔ Your trial has finished. If you enjoyed the signals, you can upgrade "
+                "to a paid plan to continue."
+            ),
+        )
+    except Exception:
+        # User might have blocked the bot or never opened DM; ignore
+        pass
+
     # Optionally remove from trial channel
     try:
         await context.bot.ban_chat_member(TRIAL_CHANNEL_ID, user_id)
@@ -393,7 +690,54 @@ def main() -> None:
     # BOT_TOKEN is already validated at module level
     application = ApplicationBuilder().token(BOT_TOKEN).build()
 
+    # Restore trial end jobs after a restart based on active_trials.json
+    try:
+        from datetime import datetime as _dt
+
+        now = _now_utc()
+        active_trials = get_all_active_trials()
+        jq = application.job_queue
+
+        for tg_id_str, info in active_trials.items():
+            try:
+                user_id = int(tg_id_str)
+            except ValueError:
+                continue
+
+            trial_end_at_str = info.get("trial_end_at")
+            join_time_str = info.get("join_time")
+            total_hours = info.get("total_hours")
+
+            end_dt = None
+            try:
+                if trial_end_at_str:
+                    end_dt = _dt.fromisoformat(trial_end_at_str)
+                elif join_time_str and total_hours is not None:
+                    join_dt = _dt.fromisoformat(join_time_str)
+                    end_dt = join_dt + timedelta(hours=float(total_hours))
+            except Exception:
+                end_dt = None
+
+            if not end_dt:
+                continue
+
+            # If already past end time, schedule immediate cleanup
+            delay = end_dt - now
+            if delay.total_seconds() < 0:
+                delay = timedelta(seconds=0)
+
+            jq.run_once(
+                trial_end,
+                when=delay,
+                data={"user_id": user_id},
+            )
+    except Exception as e:
+        print(f"⚠️ Failed to restore active trial jobs: {e}")
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("faq", faq_command))
+    application.add_handler(CommandHandler("about", about_command))
+    application.add_handler(CommandHandler("support", support_command))
     application.add_handler(CommandHandler("retry", retry_command))
 
     application.add_handler(
