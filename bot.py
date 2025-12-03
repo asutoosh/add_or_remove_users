@@ -30,6 +30,7 @@ load_dotenv()
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 TRIAL_CHANNEL_ID = int(os.environ.get("TRIAL_CHANNEL_ID", "0"))
 BASE_URL = os.environ.get("BASE_URL", "http://127.0.0.1:5000")
+BLOCKED_PHONE_COUNTRY_CODE = os.environ.get("BLOCKED_PHONE_COUNTRY_CODE", "+91")
 
 # Validate required environment variables for production deployment
 if not BOT_TOKEN:
@@ -188,8 +189,8 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     data = get_pending_verification(user.id) or {}
 
-    # Block Indian phone numbers
-    if phone.startswith("+91"):
+    # Block phone numbers by country code (configurable via env BLOCKED_PHONE_COUNTRY_CODE, default +91)
+    if BLOCKED_PHONE_COUNTRY_CODE and phone.startswith(BLOCKED_PHONE_COUNTRY_CODE):
         data["status"] = "blocked_phone_india"
         data["phone"] = phone
         set_pending_verification(user.id, data)
