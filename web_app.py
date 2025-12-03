@@ -9,7 +9,7 @@ from flask import Flask, request, render_template_string, jsonify
 from storage import set_pending_verification, get_pending_verification
 
 
-# Load .env if present
+# Load .env if present (for droplet: we typically use a .env file in the app directory)
 load_dotenv()
 
 IP2LOCATION_API_KEY = os.environ.get("IP2LOCATION_API_KEY", "")
@@ -724,18 +724,27 @@ def api_get_verification():
     return jsonify({"success": False, "data": None})
 
 
+ENABLE_DEBUG_IP = os.environ.get("ENABLE_DEBUG_IP", "0") == "1"
+
+
 @app.route("/debug-ip")
 def debug_ip() -> str:
     """
     Temporary debug endpoint to check what IP2Location API returns.
-    Remove this in production!
+
+    For security, this is DISABLED by default in production.
+    Set ENABLE_DEBUG_IP=1 in the environment if you explicitly
+    want to turn it on (e.g. for debugging from a trusted IP).
     """
+    if not ENABLE_DEBUG_IP:
+        return "Not found", 404
+
     ip = get_client_ip()
     data = _ip2location_lookup(ip)
-    
+
     if not data:
         return f"API lookup failed for IP: {ip}", 500
-    
+
     # Format response for debugging
     import json
     debug_info = {
@@ -748,7 +757,7 @@ def debug_ip() -> str:
         "usage_type": data.get("usage_type"),
         "full_response": data,
     }
-    
+
     return f"<pre>{json.dumps(debug_info, indent=2)}</pre>", 200
 
 
@@ -899,7 +908,9 @@ if __name__ == "__main__":
     # Local testing:
     #   python web_app.py
     #   then open http://127.0.0.1:5000/trial?tg_id=12345
-    # Production: Render sets PORT environment variable
+    #
+    # On a DigitalOcean droplet, we typically run this via systemd
+    # and keep the default port 5000, with Nginx proxying HTTPS traffic.
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=False)
 

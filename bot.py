@@ -1,4 +1,3 @@
-import asyncio
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
@@ -32,19 +31,19 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 TRIAL_CHANNEL_ID = int(os.environ.get("TRIAL_CHANNEL_ID", "0"))
 BASE_URL = os.environ.get("BASE_URL", "http://127.0.0.1:5000")
 
-# Validate required environment variables
+# Validate required environment variables for production deployment
 if not BOT_TOKEN:
     error_msg = (
         "❌ ERROR: BOT_TOKEN is missing!\n"
-        "   For Render: Set BOT_TOKEN in Render Dashboard → Your service → Environment\n"
-        "   For local: Create .env file with BOT_TOKEN=your_token"
+        "   Set BOT_TOKEN in your environment (e.g. .env on the server or systemd Environment=).\n"
+        "   For local development: create a .env file with BOT_TOKEN=your_token"
     )
     print(error_msg)
     raise RuntimeError("BOT_TOKEN is required but not set")
 
 if TRIAL_CHANNEL_ID == 0:
     print("⚠️  WARNING: TRIAL_CHANNEL_ID is not set (using 0)")
-    print("   Set TRIAL_CHANNEL_ID in Render Dashboard → Environment (or .env for local)")
+    print("   Set TRIAL_CHANNEL_ID in your environment (or .env for local development)")
 
 print(f"✅ Bot starting...")
 print(f"   BASE_URL: {BASE_URL}")
@@ -110,11 +109,12 @@ async def continue_verification_callback(update: Update, context: ContextTypes.D
     user = query.from_user
     tg_id = user.id
 
-    # Try to get data from local storage first
+    # Try to get data from local storage first (same machine)
     data = get_pending_verification(tg_id)
     
-    # If not found locally, try to fetch from web app API (for Render deployment)
-    # This works even if web app and bot are in separate containers
+    # If not found locally, try to fetch from web app API.
+    # This works even if web app and bot are on separate processes / machines,
+    # as long as BASE_URL points to your HTTPS domain on the droplet.
     if not data or not data.get("step1_ok"):
         try:
             import aiohttp
