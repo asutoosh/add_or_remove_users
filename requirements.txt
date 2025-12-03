@@ -1,3 +1,6 @@
+# Production dependencies
+# Using ~= (compatible release) for security patches while maintaining stability
+# For stricter pinning, use: pip freeze > requirements-lock.txt
 Flask~=3.0
 python-telegram-bot[ext]~=21.5
 requests~=2.32

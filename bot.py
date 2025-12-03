@@ -1,8 +1,58 @@
+import logging
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 from dotenv import load_dotenv
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# Safe environment parsing helpers
+# ============================================================================
+def _safe_int_env(name: str, default: int) -> int:
+    """Safely parse integer environment variable with fallback."""
+    val = os.environ.get(name)
+    if val is None or val == "":
+        return default
+    try:
+        return int(val)
+    except ValueError:
+        logger.warning(f"Invalid integer for {name}: {val!r}; using default {default}")
+        return default
+
+
+def _safe_float_env(name: str, default: float) -> float:
+    """Safely parse float environment variable with fallback."""
+    val = os.environ.get(name)
+    if val is None or val == "":
+        return default
+    try:
+        return float(val)
+    except ValueError:
+        logger.warning(f"Invalid float for {name}: {val!r}; using default {default}")
+        return default
+
+
+# ============================================================================
+# Timezone-aware datetime helpers
+# ============================================================================
+def _parse_iso_to_utc(value: str) -> datetime:
+    """
+    Parse ISO8601 string to timezone-aware UTC datetime.
+    If the string has no tzinfo, we assume it was stored as UTC.
+    """
+    dt = datetime.fromisoformat(value)
+    if dt.tzinfo is None:
+        # Assume naive timestamps were stored as UTC
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -28,12 +78,14 @@ from storage import (
     append_trial_log,
     has_used_trial,
     mark_trial_used,
+    get_used_trial_info,
     get_active_trial,
     set_active_trial,
     clear_active_trial,
     get_all_active_trials,
     get_invite_info,
     set_invite_info,
+    get_valid_invite_link,
 )
 
 
@@ -41,29 +93,42 @@ from storage import (
 load_dotenv()
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-TRIAL_CHANNEL_ID = int(os.environ.get("TRIAL_CHANNEL_ID", "0"))
+TRIAL_CHANNEL_ID = _safe_int_env("TRIAL_CHANNEL_ID", 0)
 BASE_URL = os.environ.get("BASE_URL", "http://127.0.0.1:5000")
 BLOCKED_PHONE_COUNTRY_CODE = os.environ.get("BLOCKED_PHONE_COUNTRY_CODE", "+91")
-TIMEZONE_OFFSET_HOURS = float(os.environ.get("TIMEZONE_OFFSET_HOURS", "0"))
+TIMEZONE_OFFSET_HOURS = _safe_float_env("TIMEZONE_OFFSET_HOURS", 0.0)
+API_SECRET = os.environ.get("API_SECRET", "")  # Optional: for web app API authentication
 
 # Validate required environment variables for production deployment
 if not BOT_TOKEN:
     error_msg = (
-        "❌ ERROR: BOT_TOKEN is missing!\n"
-        "   Set BOT_TOKEN in your environment (e.g. .env on the server or systemd Environment=).\n"
-        "   For local development: create a .env file with BOT_TOKEN=your_token"
+        "BOT_TOKEN is missing! "
+        "Set BOT_TOKEN in your environment (e.g. .env on the server or systemd Environment=). "
+        "For local development: create a .env file with BOT_TOKEN=your_token"
     )
-    print(error_msg)
+    logger.error(error_msg)
     raise RuntimeError("BOT_TOKEN is required but not set")
 
 if TRIAL_CHANNEL_ID == 0:
-    print("⚠️  WARNING: TRIAL_CHANNEL_ID is not set (using 0)")
-    print("   Set TRIAL_CHANNEL_ID in your environment (or .env for local development)")
+    logger.warning("TRIAL_CHANNEL_ID is not set (using 0). Set it in your environment.")
 
-print(f"✅ Bot starting...")
-print(f"   BASE_URL: {BASE_URL}")
-print(f"   TRIAL_CHANNEL_ID: {TRIAL_CHANNEL_ID}")
-print(f"   BOT_TOKEN: {'*' * 10 if BOT_TOKEN else 'NOT SET'}")
+# Trial duration constants
+TRIAL_HOURS_3_DAY = 72
+TRIAL_HOURS_5_DAY = 120
+TAMPERING_TOLERANCE_SECONDS = 3600  # 1 hour tolerance for trial data validation
+TRIAL_COOLDOWN_DAYS = 30  # Days before user can request another trial
+INVITE_LINK_EXPIRY_HOURS = 5  # Hours before invite link expires
+
+# Configurable support/giveaway links (fallback to defaults if not set)
+GIVEAWAY_CHANNEL_URL = os.environ.get("GIVEAWAY_CHANNEL_URL", "https://t.me/Freya_Trades")
+SUPPORT_CONTACT = os.environ.get("SUPPORT_CONTACT", "@cogitosk")
+FEEDBACK_FORM_URL = os.environ.get("FEEDBACK_FORM_URL", "https://forms.gle/K7ubyn2tvzuYeHXn9")
+SUPPORT_FORM_URL = os.environ.get("SUPPORT_FORM_URL", "https://forms.gle/CJbNczZ6BcKjk6Bz9")
+
+logger.info("Bot starting...")
+logger.info(f"BASE_URL: {BASE_URL}")
+logger.info(f"TRIAL_CHANNEL_ID: {TRIAL_CHANNEL_ID}")
+logger.info(f"BOT_TOKEN: {'*' * 10 if BOT_TOKEN else 'NOT SET'}")
 
 
 # Track last time check to detect clock manipulation
@@ -77,8 +142,7 @@ def _now_utc() -> datetime:
     if _last_time_check:
         # Check if time went backwards (clock manipulation)
         if now < _last_time_check:
-            print(f"⚠️ CRITICAL: System clock went backwards! "
-                  f"Previous: {_last_time_check}, Now: {now}")
+            logger.critical(f"System clock went backwards! Previous: {_last_time_check}, Now: {now}")
             # Use previous time + small increment to prevent issues
             now = _last_time_check + timedelta(seconds=1)
     
@@ -104,34 +168,34 @@ def validate_trial_data(trial_data: dict, user_id: int) -> bool:
         return False
     
     try:
-        from datetime import datetime as _dt
-        join_time = _dt.fromisoformat(trial_data["join_time"])
-        total_hours = float(trial_data["total_hours"])
+        join_time = _parse_iso_to_utc(trial_data["join_time"])
+        # Normalize total_hours to int for consistent comparisons
+        total_hours = int(float(trial_data["total_hours"]))
         
         # Calculate expected end time
         expected_end = join_time + timedelta(hours=total_hours)
         
         # If trial_end_at exists, it should match calculation (within 1 hour tolerance)
         if "trial_end_at" in trial_data:
-            claimed_end = _dt.fromisoformat(trial_data["trial_end_at"])
+            claimed_end = _parse_iso_to_utc(trial_data["trial_end_at"])
             time_diff = abs((claimed_end - expected_end).total_seconds())
-            if time_diff > 3600:  # More than 1 hour difference = tampering
-                print(f"⚠️ WARNING: Trial data tampering detected for user {user_id}")
+            if time_diff > TAMPERING_TOLERANCE_SECONDS:  # More than tolerance = tampering
+                logger.warning(f"Trial data tampering detected for user {user_id}")
                 return False
         
         # Check total_hours is valid (3 or 5 days only)
-        if total_hours not in [72, 120]:
-            print(f"⚠️ WARNING: Invalid total_hours ({total_hours}) for user {user_id}")
+        if total_hours not in [TRIAL_HOURS_3_DAY, TRIAL_HOURS_5_DAY]:
+            logger.warning(f"Invalid total_hours ({total_hours}) for user {user_id}")
             return False
         
         # Check join_time is not in future
         if join_time > _now_utc():
-            print(f"⚠️ WARNING: Join time in future for user {user_id}")
+            logger.warning(f"Join time in future for user {user_id}")
             return False
         
         return True
     except Exception as e:
-        print(f"⚠️ Error validating trial data for user {user_id}: {e}")
+        logger.warning(f"Error validating trial data for user {user_id}: {e}")
         return False
 
 
@@ -145,8 +209,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(
             "You have already used your free 3-day trial once.\n\n"
             "🎁 For more chances, you can join our giveaway channel:\n"
-            "https://t.me/Freya_Trades\n\n"
-            "💬 Or DM @cogitosk to upgrade to the premium signals.",
+            f"{GIVEAWAY_CHANNEL_URL}\n\n"
+            f"💬 Or DM {SUPPORT_CONTACT} to upgrade to the premium signals.",
         )
         return
 
@@ -161,9 +225,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def start_trial_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
+    if not query:
+        return
     await query.answer()
 
     user = query.from_user
+    if not user:
+        return
     tg_id = user.id
 
     # Build URL - use Web App if HTTPS, fallback to regular URL if HTTP
@@ -194,49 +262,58 @@ async def start_trial_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def continue_verification_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
+    if not query:
+        return
     await query.answer()
 
     user = query.from_user
+    if not user:
+        return
     tg_id = user.id
 
     # Try to get data from local storage first (same machine)
     data = get_pending_verification(tg_id)
-    print(f"🔍 Continue verification check for tg_id={tg_id}: local data found = {data is not None}")
+    logger.debug(f"Continue verification check for tg_id={tg_id}: local data found = {data is not None}")
     
     # If not found locally, try to fetch from web app API.
     # This works even if web app and bot are on separate processes / machines,
     # as long as BASE_URL points to your HTTPS domain on the droplet.
     if not data or not data.get("step1_ok"):
-        print(f"   Local data missing or step1_ok=False, trying web app API...")
+        logger.debug("Local data missing or step1_ok=False, trying web app API...")
         try:
             import aiohttp
             api_url = f"{BASE_URL.rstrip('/')}/api/get-verification?tg_id={tg_id}"
-            print(f"   🔍 Trying to fetch from web app API: {api_url}")
+            logger.debug(f"Trying to fetch from web app API: {api_url}")
+            headers = {}
+            if API_SECRET:
+                # Use header-only authentication (more secure than URL query string)
+                headers["X-API-Secret"] = API_SECRET
             async with aiohttp.ClientSession() as session:
-                async with session.get(api_url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                async with session.get(api_url, headers=headers, timeout=aiohttp.ClientTimeout(total=5)) as resp:
                     if resp.status == 200:
                         result = await resp.json()
                         if result.get("success") and result.get("data"):
                             data = result["data"]
-                            print(f"   ✅ Got data from web app API for tg_id={tg_id}")
-                            print(f"   Data keys: {list(data.keys())}, step1_ok: {data.get('step1_ok')}")
+                            logger.debug(f"Got data from web app API for tg_id={tg_id}")
+                            logger.debug(f"Data keys: {list(data.keys())}, step1_ok: {data.get('step1_ok')}")
                             # Also save locally for future use
-                            from storage import set_pending_verification
                             set_pending_verification(tg_id, data)
                         else:
-                            print(f"   ❌ API returned success=False or no data")
+                            logger.debug("API returned success=False or no data")
+                    elif resp.status == 401:
+                        logger.warning("API authentication failed - check API_SECRET")
+                    elif resp.status == 429:
+                        logger.warning("API rate limited")
                     else:
-                        print(f"   ❌ API returned status {resp.status}")
+                        logger.debug(f"API returned status {resp.status}")
         except Exception as e:
-            print(f"   ⚠️ Could not fetch from API: {e}")
-            import traceback
-            print(traceback.format_exc())
+            logger.warning(f"Could not fetch from API: {e}", exc_info=True)
             # Continue with local check
     else:
-        print(f"   ✅ Found valid local data: step1_ok={data.get('step1_ok')}")
+        logger.debug(f"Found valid local data: step1_ok={data.get('step1_ok')}")
     
     if not data or not data.get("step1_ok"):
-        print(f"   ❌ No valid verification data found for tg_id={tg_id}")
+        logger.debug(f"No valid verification data found for tg_id={tg_id}")
         await query.edit_message_text(
             "We could not find your web verification.\n"
             "Please tap 'Get Free Trial' again and complete the web step first.\n\n"
@@ -250,7 +327,7 @@ async def continue_verification_callback(update: Update, context: ContextTypes.D
         )
         return
     
-    print(f"   ✅ Verification Step 1 confirmed passed for tg_id={tg_id}")
+    logger.info(f"Verification Step 1 confirmed passed for tg_id={tg_id}")
 
     contact_button = KeyboardButton(text="📱 Share phone number", request_contact=True)
     keyboard = ReplyKeyboardMarkup([[contact_button]], resize_keyboard=True, one_time_keyboard=True)
@@ -366,7 +443,7 @@ async def support_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     support_text = (
         "🆘 *Support*\n\n"
         "If you can't access the premium group or need assistance, please submit this form:\n\n"
-        "👉 https://forms.gle/CJbNczZ6BcKjk6Bz9\n\n"
+        f"👉 {SUPPORT_FORM_URL}\n\n"
         "Our team will contact you shortly to help resolve your issue."
     )
     await update.message.reply_text(support_text, parse_mode="Markdown")
@@ -420,26 +497,11 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     set_pending_verification(user.id, data)
 
     # Before generating a new invite link, check if user recently generated one
-    # Use storage lock to prevent race condition (multiple rapid clicks)
+    # Use atomic function to prevent race condition (multiple rapid clicks)
     now = _now_utc()
-    from storage import _lock
+    existing_link = get_valid_invite_link(user.id, now)
     
-    existing_link = None
-    with _lock:
-        invite_info = get_invite_info(user.id)
-        if invite_info and "invite_expires_at" in invite_info:
-            from datetime import datetime as _dt
-
-            try:
-                expires_at = _dt.fromisoformat(invite_info["invite_expires_at"])
-                if now < expires_at and invite_info.get("invite_link"):
-                    # Existing invite still valid
-                    existing_link = invite_info['invite_link']
-            except Exception:
-                # If parsing fails, fall through and create a fresh link
-                pass
-    
-    # Send message outside lock to avoid blocking
+    # Send message if existing link is valid
     if existing_link:
         await update.message.reply_text(
             "You already generated a trial invite link recently.\n\n"
@@ -453,8 +515,8 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     bot = context.bot
     try:
-        # Expire invite link after 5 hours
-        expires_at_dt = now + timedelta(hours=5)
+        # Expire invite link after configured hours
+        expires_at_dt = now + timedelta(hours=INVITE_LINK_EXPIRY_HOURS)
         invite_link = await bot.create_chat_invite_link(
             chat_id=TRIAL_CHANNEL_ID,
             member_limit=1,
@@ -514,7 +576,7 @@ async def periodic_trial_cleanup(context: ContextTypes.DEFAULT_TYPE) -> None:
             
             # Validate trial data first
             if not validate_trial_data(info, user_id):
-                print(f"⚠️ Invalid trial data for user {user_id}, cleaning up")
+                logger.warning(f"Invalid trial data for user {user_id}, cleaning up")
                 clear_active_trial(user_id)
                 cleaned_count += 1
                 continue
@@ -523,8 +585,7 @@ async def periodic_trial_cleanup(context: ContextTypes.DEFAULT_TYPE) -> None:
             if not trial_end_at_str:
                 continue
             
-            from datetime import datetime as _dt
-            end_at = _dt.fromisoformat(trial_end_at_str)
+            end_at = _parse_iso_to_utc(trial_end_at_str)
             
             # If trial expired, end it now
             if now >= end_at:
@@ -557,12 +618,12 @@ async def periodic_trial_cleanup(context: ContextTypes.DEFAULT_TYPE) -> None:
                 except Exception:
                     pass
                 
-                print(f"✅ Cleaned up expired trial for user {user_id}")
+                logger.info(f"Cleaned up expired trial for user {user_id}")
         except Exception as e:
-            print(f"⚠️ Error in periodic cleanup for {tg_id_str}: {e}")
+            logger.warning(f"Error in periodic cleanup for {tg_id_str}: {e}")
     
     if cleaned_count > 0:
-        print(f"✅ Periodic cleanup: Ended {cleaned_count} expired trial(s)")
+        logger.info(f"Periodic cleanup: Ended {cleaned_count} expired trial(s)")
 
 
 async def trial_chat_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -578,33 +639,49 @@ async def trial_chat_member_update(update: Update, context: ContextTypes.DEFAULT
     # Detect join: previously left/kicked, now member/admin
     if old.status in ("left", "kicked") and new.status in ("member", "administrator"):
         user = new.user
+        if not user:
+            # Safety check: user should always be present, but handle edge case
+            logger.warning("new.user is None in trial_chat_member_update")
+            return
         now = _now_utc()
 
         # Check if user has already used a trial (prevent rejoin extension exploit)
         if has_used_trial(user.id):
             # User already used trial - check if enough time has passed (30 day cooldown)
-            from storage import _load_json
-            import os
-            USED_TRIALS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "used_trials.json")
-            used_data = _load_json(USED_TRIALS_FILE, {})
-            user_trial_info = used_data.get(str(user.id), {})
+            user_trial_info = get_used_trial_info(user.id)
+            if not user_trial_info:
+                # Should not happen if has_used_trial returned True, but block to be safe
+                await context.bot.send_message(
+                    chat_id=user.id,
+                    text=(
+                        "You have already used a trial. Please wait before requesting another.\n\n"
+                        "🎁 For more chances, you can join our giveaway channel:\n"
+                        f"{GIVEAWAY_CHANNEL_URL}\n\n"
+                        f"💬 Or DM {SUPPORT_CONTACT} to upgrade to the premium signals."
+                    ),
+                )
+                try:
+                    await context.bot.ban_chat_member(TRIAL_CHANNEL_ID, user.id)
+                    await context.bot.unban_chat_member(TRIAL_CHANNEL_ID, user.id)
+                except Exception:
+                    pass
+                return
             
             # Check when trial ended
             trial_ended_at_str = user_trial_info.get("trial_ended_at") or user_trial_info.get("left_early_at")
             if trial_ended_at_str:
                 try:
-                    from datetime import datetime as _dt
-                    ended_at = _dt.fromisoformat(trial_ended_at_str)
+                    ended_at = _parse_iso_to_utc(trial_ended_at_str)
                     days_since_end = (now - ended_at).total_seconds() / 86400
                     
-                    if days_since_end < 30:  # 30 day cooldown period
+                    if days_since_end < TRIAL_COOLDOWN_DAYS:  # Cooldown period
                         await context.bot.send_message(
                             chat_id=user.id,
                             text=(
-                                "You recently used a trial. Please wait 30 days before requesting another.\n\n"
+                                f"You recently used a trial. Please wait {TRIAL_COOLDOWN_DAYS} days before requesting another.\n\n"
                                 "🎁 For more chances, you can join our giveaway channel:\n"
-                                "https://t.me/Freya_Trades\n\n"
-                                "💬 Or DM @cogitosk to upgrade to the premium signals."
+                                f"{GIVEAWAY_CHANNEL_URL}\n\n"
+                                f"💬 Or DM {SUPPORT_CONTACT} to upgrade to the premium signals."
                             ),
                         )
                         # Remove from channel
@@ -615,28 +692,58 @@ async def trial_chat_member_update(update: Update, context: ContextTypes.DEFAULT
                             pass
                         return
                 except Exception:
+                    # If we can't parse the date, block to be safe
+                    await context.bot.send_message(
+                        chat_id=user.id,
+                        text=(
+                            "You have already used a trial. Please wait before requesting another.\n\n"
+                            "🎁 For more chances, you can join our giveaway channel:\n"
+                            f"{GIVEAWAY_CHANNEL_URL}\n\n"
+                            f"💬 Or DM {SUPPORT_CONTACT} to upgrade to the premium signals."
+                        ),
+                    )
+                    try:
+                        await context.bot.ban_chat_member(TRIAL_CHANNEL_ID, user.id)
+                        await context.bot.unban_chat_member(TRIAL_CHANNEL_ID, user.id)
+                    except Exception:
+                        pass
+                    return
+            else:
+                # No end date recorded but they used a trial - block to be safe
+                await context.bot.send_message(
+                    chat_id=user.id,
+                    text=(
+                        "You have already used a trial. Please wait before requesting another.\n\n"
+                        "🎁 For more chances, you can join our giveaway channel:\n"
+                        f"{GIVEAWAY_CHANNEL_URL}\n\n"
+                        f"💬 Or DM {SUPPORT_CONTACT} to upgrade to the premium signals."
+                    ),
+                )
+                try:
+                    await context.bot.ban_chat_member(TRIAL_CHANNEL_ID, user.id)
+                    await context.bot.unban_chat_member(TRIAL_CHANNEL_ID, user.id)
+                except Exception:
                     pass
+                return
         
         # Determine trial duration based on weekend
         if _is_weekend(now):
             trial_days = 5
-            total_hours = 120
+            total_hours = TRIAL_HOURS_5_DAY
         else:
             trial_days = 3
-            total_hours = 72
+            total_hours = TRIAL_HOURS_3_DAY
 
         # If an active trial already exists and has not yet expired, avoid double-scheduling
         existing = get_active_trial(user.id)
         if existing:
             # Validate trial data hasn't been tampered with
             if not validate_trial_data(existing, user.id):
-                print(f"⚠️ Invalid trial data for user {user.id}, clearing and restarting")
+                logger.warning(f"Invalid trial data for user {user.id}, clearing and restarting")
                 clear_active_trial(user.id)
             elif "trial_end_at" in existing:
-                from datetime import datetime as _dt
-
                 try:
-                    end_at = _dt.fromisoformat(existing["trial_end_at"])
+                    end_at = _parse_iso_to_utc(existing["trial_end_at"])
                     if now < end_at:
                         # Trial is already running; do not re-start it
                         return
@@ -721,19 +828,21 @@ async def trial_chat_member_update(update: Update, context: ContextTypes.DEFAULT
             bot_user = None
 
         # If the actor is the bot, don't send feedback (this is likely trial_end cleanup)
-        if bot_user and chat_member.from_user.id == bot_user.id:
+        if bot_user and chat_member.from_user and chat_member.from_user.id == bot_user.id:
             return
 
         user = old.user
+        if not user:
+            # Safety check: user should always be present, but handle edge case
+            logger.warning("old.user is None in trial_chat_member_update")
+            return
 
         # Try to compute how many trial hours they used and how many were remaining
         remaining_info = ""
         try:
             active = get_active_trial(user.id)
             if active and "join_time" in active and "total_hours" in active:
-                from datetime import datetime as _dt
-
-                join_time = _dt.fromisoformat(active["join_time"])
+                join_time = _parse_iso_to_utc(active["join_time"])
                 total_hours = float(active["total_hours"])
                 now = _now_utc()
                 elapsed_hours = (now - join_time).total_seconds() / 3600.0
@@ -748,7 +857,7 @@ async def trial_chat_member_update(update: Update, context: ContextTypes.DEFAULT
                     f"of your free trial and had about {remaining_hours_rounded} hours remaining."
                 )
         except Exception as e:
-            print(f"⚠️ Failed to compute remaining trial hours for user_id={user.id}: {e}")
+            logger.warning(f"Failed to compute remaining trial hours for user_id={user.id}: {e}")
 
         await context.bot.send_message(
             chat_id=user.id,
@@ -757,7 +866,7 @@ async def trial_chat_member_update(update: Update, context: ContextTypes.DEFAULT
                 f"{remaining_info}\n\n"
                 "We hope you had a great time testing our signals 🙌\n"
                 "It would mean a lot if you could share quick feedback here:\n"
-                "https://forms.gle/K7ubyn2tvzuYeHXn9"
+                f"{FEEDBACK_FORM_URL}"
             ),
         )
 
@@ -770,7 +879,7 @@ async def trial_chat_member_update(update: Update, context: ContextTypes.DEFAULT
                 },
             )
         except Exception as e:
-            print(f"⚠️ Failed to mark trial used on early leave for user_id={user.id}: {e}")
+            logger.warning(f"Failed to mark trial used on early leave for user_id={user.id}: {e}")
 
         # Clear active trial tracking since they left
         clear_active_trial(user.id)
@@ -828,7 +937,7 @@ async def trial_end(context: ContextTypes.DEFAULT_TYPE) -> None:
         )
     except Exception as e:
         # Do not crash job on storage issues; just log if needed
-        print(f"⚠️ Failed to mark trial as used for user_id={user_id}: {e}")
+        logger.warning(f"Failed to mark trial as used for user_id={user_id}: {e}")
 
     # Clear active trial tracking on natural trial end
     clear_active_trial(user_id)
@@ -866,8 +975,6 @@ def main() -> None:
 
     # Restore trial end jobs after a restart based on active_trials.json
     try:
-        from datetime import datetime as _dt
-
         now = _now_utc()
         active_trials = get_all_active_trials()
         jq = application.job_queue
@@ -880,7 +987,7 @@ def main() -> None:
 
             # Validate trial data hasn't been tampered with
             if not validate_trial_data(info, user_id):
-                print(f"⚠️ Invalid trial data for user {user_id} on restore, clearing")
+                logger.warning(f"Invalid trial data for user {user_id} on restore, clearing")
                 clear_active_trial(user_id)
                 continue
 
@@ -891,9 +998,9 @@ def main() -> None:
             end_dt = None
             try:
                 if trial_end_at_str:
-                    end_dt = _dt.fromisoformat(trial_end_at_str)
+                    end_dt = _parse_iso_to_utc(trial_end_at_str)
                 elif join_time_str and total_hours is not None:
-                    join_dt = _dt.fromisoformat(join_time_str)
+                    join_dt = _parse_iso_to_utc(join_time_str)
                     end_dt = join_dt + timedelta(hours=float(total_hours))
             except Exception:
                 end_dt = None
@@ -912,7 +1019,7 @@ def main() -> None:
                 data={"user_id": user_id},
             )
     except Exception as e:
-        print(f"⚠️ Failed to restore active trial jobs: {e}")
+        logger.warning(f"Failed to restore active trial jobs: {e}")
     
     # Add periodic cleanup job as fallback (runs every hour)
     # This ensures trials end even if scheduled jobs fail
@@ -922,9 +1029,9 @@ def main() -> None:
             interval=timedelta(hours=1),  # Check every hour
             first=timedelta(minutes=5)  # Start 5 minutes after bot starts
         )
-        print("✅ Periodic trial cleanup job scheduled")
+        logger.info("Periodic trial cleanup job scheduled")
     except Exception as e:
-        print(f"⚠️ Failed to schedule periodic cleanup job: {e}")
+        logger.warning(f"Failed to schedule periodic cleanup job: {e}")
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("faq", faq_command))
@@ -953,14 +1060,12 @@ def main() -> None:
 
 if __name__ == "__main__":
     try:
-        print("🚀 Starting Telegram bot...")
+        logger.info("Starting Telegram bot...")
         main()
     except KeyboardInterrupt:
-        print("\n⚠️ Bot stopped by user")
+        logger.info("Bot stopped by user")
     except Exception as e:
-        print(f"❌ Fatal error: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.error(f"Fatal error: {e}", exc_info=True)
         raise
 
 

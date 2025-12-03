@@ -1,5 +1,9 @@
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
+from collections import defaultdict
+import html
+import logging
+import re
 
 import os
 import hmac
@@ -12,70 +16,131 @@ from flask import Flask, request, render_template_string, jsonify
 
 from storage import set_pending_verification, get_pending_verification, check_rate_limit
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 # Load .env if present (for droplet: we typically use a .env file in the app directory)
 load_dotenv()
 
 IP2LOCATION_API_KEY = os.environ.get("IP2LOCATION_API_KEY", "")
+IP2LOCATION_API_KEY_2 = os.environ.get("IP2LOCATION_API_KEY_2", "")
 # Blocked country code (e.g., "IN" for India, "PK" for Pakistan)
 # Set via environment variable, defaults to "PK" for testing
 BLOCKED_COUNTRY_CODE = os.environ.get("BLOCKED_COUNTRY_CODE", "PK").upper()
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+# API secret for bot-to-web-app communication (optional but recommended)
+API_SECRET = os.environ.get("API_SECRET", "")
+
+# Validate critical environment variables
+if not BOT_TOKEN:
+    logger.warning("BOT_TOKEN not set - initData validation will be disabled. OK for local testing but NOT recommended for production.")
 
 app = Flask(__name__)
+
+# IP-based rate limiting (in-memory, resets on restart)
+_ip_rate_limits = defaultdict(list)
 
 
 def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def sanitize_input(text: str, max_length: int = 200) -> Optional[str]:
+    """
+    Sanitize user input to prevent XSS and limit length.
+    Returns None if input is invalid.
+    """
+    if not text:
+        return None
+    text = text.strip()
+    if len(text) > max_length:
+        text = text[:max_length]
+    # Escape HTML to prevent XSS
+    return html.escape(text)
+
+
+def is_valid_email(email: str) -> bool:
+    """Basic email validation (optional field, so empty is valid)"""
+    if not email:
+        return True  # Optional field
+    pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    return bool(re.match(pattern, email))
+
+
+def check_ip_rate_limit(ip: str, max_requests: int = 10, window_minutes: int = 15) -> bool:
+    """
+    Check IP-based rate limit to prevent distributed attacks.
+    Returns True if allowed, False if rate limited.
+    """
+    now = _now_utc()
+    cutoff = now - timedelta(minutes=window_minutes)
+    
+    # Clean old entries
+    _ip_rate_limits[ip] = [ts for ts in _ip_rate_limits[ip] if ts > cutoff]
+    
+    if len(_ip_rate_limits[ip]) >= max_requests:
+        return False
+    
+    _ip_rate_limits[ip].append(now)
+    return True
+
+
 def validate_init_data(init_data: str) -> Optional[dict]:
     """
     Validate Telegram Web App initData hash to prevent impersonation.
     Returns user data dict if valid, None otherwise.
+    
+    Implementation follows Telegram docs:
+      secret_key = SHA256(bot_token)
+      hash = HMAC-SHA256(secret_key, data_check_string)
     """
     if not BOT_TOKEN:
         # If no bot token, skip validation (for local testing only)
-        print("⚠️ WARNING: BOT_TOKEN not set, skipping initData validation")
+        logger.warning("BOT_TOKEN not set, skipping initData validation")
         return None
     
     try:
         parsed = urllib.parse.parse_qs(init_data)
-        hash_value = parsed.get('hash', [None])[0]
-        if not hash_value:
+        hash_list = parsed.get("hash", [])
+        if not hash_list or not hash_list[0]:
             return None
+        hash_value = hash_list[0]
         
-        # Remove hash from data and create check string
-        data_check_string = '&'.join(
+        # Remove hash from data and create check string (sorted alphabetically)
+        data_check_string = "&".join(
             f"{k}={v[0]}" 
             for k, v in sorted(parsed.items()) 
-            if k != 'hash'
+            if k != "hash" and v and len(v) > 0
         )
         
-        # Create secret key using Telegram's method
-        secret_key = hmac.new(
-            b"WebAppData",
-            BOT_TOKEN.encode(),
-            hashlib.sha256
-        ).digest()
+        # Correct key derivation per Telegram docs: secret_key = SHA256(bot_token)
+        secret_key = hashlib.sha256(BOT_TOKEN.encode()).digest()
         
-        # Validate hash
+        # Validate hash using HMAC-SHA256
         calculated_hash = hmac.new(
             secret_key,
             data_check_string.encode(),
             hashlib.sha256
         ).hexdigest()
         
-        if calculated_hash != hash_value:
-            print(f"⚠️ Invalid initData hash - possible tampering detected")
+        if not hmac.compare_digest(calculated_hash, hash_value):
+            logger.warning("Invalid initData hash - possible tampering detected")
             return None
         
         # Parse user data if present
-        if 'user' in parsed:
-            user_data = json.loads(parsed['user'][0])
-            return user_data
-    except Exception as e:
-        print(f"⚠️ Error validating initData: {e}")
+        if "user" in parsed and parsed["user"]:
+            try:
+                user_data = json.loads(parsed["user"][0])
+                return user_data
+            except Exception:
+                logger.exception("Failed to parse user JSON from initData")
+                return None
+    except Exception:
+        logger.exception("Unexpected error validating initData")
         return None
     return None
 
@@ -88,106 +153,165 @@ def get_client_ip() -> str:
     forwarded_for = request.headers.get("X-Forwarded-For")
     if forwarded_for:
         # Take the first IP in the list
-        return forwarded_for.split(",")[0].strip()
+        ips = forwarded_for.split(",")
+        if ips and ips[0].strip():
+            return ips[0].strip()
     return request.remote_addr or "0.0.0.0"
 
 
 def _ip2location_lookup(ip: str) -> Optional[dict]:
     """
     Call IP2Location.io to get geolocation and proxy info.
+    Uses load balancing between two API keys if both are configured.
     Docs: https://www.ip2location.io/ip2location-documentation
     """
     base_url = "https://api.ip2location.io/"
-    params = {"ip": ip, "format": "json"}
-    # If you configured a key, send it; otherwise keyless (limited) mode.
+    
+    # Build list of available API keys
+    api_keys = []
     if IP2LOCATION_API_KEY:
-        params["key"] = IP2LOCATION_API_KEY
+        api_keys.append(IP2LOCATION_API_KEY)
+    if IP2LOCATION_API_KEY_2:
+        api_keys.append(IP2LOCATION_API_KEY_2)
+    
+    # If no keys configured, use keyless mode
+    if not api_keys:
+        params = {"ip": ip, "format": "json"}
+        try:
+            resp = requests.get(base_url, params=params, timeout=3)
+            if not resp.ok:
+                return None
+            data = resp.json()
+            if isinstance(data, dict) and "error" in data:
+                return None
+            return data
+        except Exception:
+            return None
+    
+    # Load balancing: use hash of IP to consistently route to same key
+    # This distributes load evenly while ensuring same IP uses same key
+    key_index = hash(ip) % len(api_keys)
+    selected_key = api_keys[key_index]
+    
+    # Try primary key first
+    params = {"ip": ip, "format": "json", "key": selected_key}
+    try:
+        resp = requests.get(base_url, params=params, timeout=3)
+        if resp.ok:
+            data = resp.json()
+            # If API returned an error object, try fallback
+            if isinstance(data, dict) and "error" in data:
+                # Try fallback key if available
+                if len(api_keys) > 1:
+                    fallback_key = api_keys[(key_index + 1) % len(api_keys)]
+                    return _try_api_key(base_url, ip, fallback_key)
+                return None
+            return data
+    except Exception:
+        pass  # Will try fallback below
+    
+    # Fallback: try the other key if primary failed
+    if len(api_keys) > 1:
+        fallback_key = api_keys[(key_index + 1) % len(api_keys)]
+        return _try_api_key(base_url, ip, fallback_key)
+    
+    # Fail open: if the lookup fails, we won't block user purely on API failure.
+    return None
 
+
+def _try_api_key(base_url: str, ip: str, api_key: str) -> Optional[dict]:
+    """Helper function to try a specific API key."""
+    params = {"ip": ip, "format": "json", "key": api_key}
     try:
         resp = requests.get(base_url, params=params, timeout=3)
         if not resp.ok:
             return None
         data = resp.json()
-        # If API returned an error object, treat as no data
         if isinstance(data, dict) and "error" in data:
             return None
         return data
     except Exception:
-        # Fail open: if the lookup fails, we won't block user purely on API failure.
         return None
+
+
+def check_ip_status(ip: str) -> tuple[bool, bool]:
+    """
+    Check IP for VPN/proxy and blocked country in a single API call.
+    Returns (is_vpn, is_blocked_country) tuple.
+    This is more efficient than calling is_vpn_ip and is_blocked_country_ip separately.
+    """
+    data = _ip2location_lookup(ip)
+    if not data:
+        # If API lookup fails, be conservative and don't block
+        return False, False
+    
+    # Check blocked country
+    country_code = data.get("country_code", "").upper()
+    is_blocked = country_code == BLOCKED_COUNTRY_CODE
+    
+    # Check VPN/proxy status
+    is_vpn = False
+    
+    # Check top-level is_proxy flag (available in all plans)
+    if data.get("is_proxy") is True:
+        is_vpn = True
+    
+    # Check detailed proxy object (available in Plus/Security plans)
+    if not is_vpn:
+        proxy = data.get("proxy")
+        if proxy and isinstance(proxy, dict):
+            proxy_indicators = [
+                proxy.get("is_vpn"),
+                proxy.get("is_tor"),
+                proxy.get("is_public_proxy"),
+                proxy.get("is_web_proxy"),
+                proxy.get("is_residential_proxy"),
+                proxy.get("is_data_center"),
+                proxy.get("is_consumer_privacy_network"),
+                proxy.get("is_enterprise_private_network"),
+                proxy.get("is_web_crawler"),
+            ]
+            if any(proxy_indicators):
+                is_vpn = True
+    
+    # Check proxy_type field if present (string value)
+    if not is_vpn:
+        proxy_type = data.get("proxy_type")
+        if proxy_type:
+            proxy_type_upper = str(proxy_type).upper()
+            if proxy_type_upper in ["VPN", "TOR", "PUB", "WEB", "RES", "DCH", "CPN", "EPN", "SES"]:
+                is_vpn = True
+    
+    # Check proxy.proxy_type if nested
+    if not is_vpn:
+        proxy = data.get("proxy")
+        if proxy and isinstance(proxy, dict):
+            nested_proxy_type = proxy.get("proxy_type")
+            if nested_proxy_type:
+                nested_type_upper = str(nested_proxy_type).upper()
+                if nested_type_upper in ["VPN", "TOR", "PUB", "WEB", "RES", "DCH", "CPN", "EPN", "SES"]:
+                    is_vpn = True
+    
+    return is_vpn, is_blocked
 
 
 def is_blocked_country_ip(ip: str) -> bool:
     """
     Use IP2Location.io to check if IP country_code matches the blocked country.
     Blocked country is set via BLOCKED_COUNTRY_CODE environment variable.
+    Note: For better performance, use check_ip_status() to combine with VPN check.
     """
-    data = _ip2location_lookup(ip)
-    if not data:
-        return False
-    country_code = data.get("country_code", "").upper()
-    return country_code == BLOCKED_COUNTRY_CODE
+    _, is_blocked = check_ip_status(ip)
+    return is_blocked
 
 
 def is_vpn_ip(ip: str) -> bool:
     """
     Use IP2Location.io proxy fields to detect VPN / proxy.
-    Checks multiple indicators to catch all VPN/proxy types.
+    Note: For better performance, use check_ip_status() to combine with country check.
     """
-    data = _ip2location_lookup(ip)
-    if not data:
-        # If API lookup fails, be conservative and don't block
-        return False
-
-    # Check top-level is_proxy flag (available in all plans)
-    # This is the most reliable indicator
-    if data.get("is_proxy") is True:
-        return True
-
-    # Check detailed proxy object (available in Plus/Security plans)
-    proxy = data.get("proxy")
-    if proxy and isinstance(proxy, dict):
-        # Check all VPN/proxy indicators - any True value means it's a proxy
-        proxy_indicators = [
-            proxy.get("is_vpn"),
-            proxy.get("is_tor"),
-            proxy.get("is_public_proxy"),
-            proxy.get("is_web_proxy"),
-            proxy.get("is_residential_proxy"),
-            proxy.get("is_data_center"),
-            proxy.get("is_consumer_privacy_network"),
-            proxy.get("is_enterprise_private_network"),
-            proxy.get("is_web_crawler"),  # Sometimes VPNs are flagged as crawlers
-        ]
-        # Check if any indicator is True
-        if any(proxy_indicators):
-            return True
-
-    # Check proxy_type field if present (string value)
-    proxy_type = data.get("proxy_type")
-    if proxy_type:
-        proxy_type_upper = str(proxy_type).upper()
-        if proxy_type_upper in ["VPN", "TOR", "PUB", "WEB", "RES", "DCH", "CPN", "EPN", "SES"]:
-            return True
-
-    # Check proxy.proxy_type if nested
-    if proxy and isinstance(proxy, dict):
-        nested_proxy_type = proxy.get("proxy_type")
-        if nested_proxy_type:
-            nested_type_upper = str(nested_proxy_type).upper()
-            if nested_type_upper in ["VPN", "TOR", "PUB", "WEB", "RES", "DCH", "CPN", "EPN", "SES"]:
-                return True
-
-    # Additional check: if usage_type suggests datacenter/hosting
-    usage_type = data.get("usage_type")
-    if usage_type and isinstance(usage_type, str):
-        # DCH = Data Center / Hosting (often used by VPNs)
-        if "DCH" in usage_type.upper() or "DATACENTER" in usage_type.upper():
-            # But don't block if it's clearly a legitimate service
-            # Only block if combined with other indicators
-            pass
-
-    return False
+    is_vpn, _ = check_ip_status(ip)
+    return is_vpn
 
 
 TRIAL_PAGE = """
@@ -747,8 +871,20 @@ def _render(message: str, show_form: bool, already_passed: bool = False) -> str:
 
 @app.route("/")
 def index() -> str:
-    """Simple root route for health checks."""
-    return "Telegram Trial Verification Service is running. Use /trial endpoint.", 200
+    """Landing page with Freya Quinn branding."""
+    try:
+        template_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates", "index.html")
+        with open(template_path, "r", encoding="utf-8") as f:
+            return f.read(), 200
+    except Exception:
+        # Fallback for health checks
+        return "Telegram Trial Verification Service is running. Use /trial endpoint.", 200
+
+
+@app.route("/health")
+def health() -> str:
+    """Health check endpoint."""
+    return "OK", 200
 
 
 @app.route("/check-step1", methods=["GET"])
@@ -769,7 +905,22 @@ def api_get_verification():
     """
     API endpoint for bot to fetch verification data.
     This allows bot to get data from web app even if they're in separate containers.
+    
+    SECURITY: Requires API_SECRET if set in environment (recommended for production).
     """
+    # Check API secret if configured (optional but recommended)
+    if API_SECRET:
+        provided_secret = request.headers.get("X-API-Secret") or request.args.get("secret")
+        if provided_secret != API_SECRET:
+            logger.warning(f"Unauthorized API access attempt from IP {get_client_ip()}")
+            return jsonify({"error": "Unauthorized"}), 401
+    
+    # IP-based rate limiting
+    ip = get_client_ip()
+    if not check_ip_rate_limit(ip, max_requests=20, window_minutes=15):
+        logger.warning(f"Rate limited API request from IP {ip}")
+        return jsonify({"error": "Rate limit exceeded"}), 429
+    
     tg_id_param: Optional[str] = request.args.get("tg_id")
     if not tg_id_param or not tg_id_param.isdigit():
         return jsonify({"error": "Invalid or missing tg_id"}), 400
@@ -802,7 +953,6 @@ def debug_ip() -> str:
         return f"API lookup failed for IP: {ip}", 500
 
     # Format response for debugging
-    import json
     debug_info = {
         "ip": ip,
         "country_code": data.get("country_code"),
@@ -820,6 +970,13 @@ def debug_ip() -> str:
 @app.route("/trial", methods=["GET", "POST"])
 def trial() -> str:
     ip = get_client_ip()
+    
+    # IP-based rate limiting (stricter for trial endpoint)
+    if not check_ip_rate_limit(ip, max_requests=5, window_minutes=60):
+        return _render(
+            "Too many requests from your IP address. Please wait 60 minutes before trying again.",
+            show_form=False,
+        )
 
     # For GET requests: Allow page to load without tg_id (JavaScript will extract it from Telegram Web App)
     if request.method == "GET":
@@ -836,8 +993,10 @@ def trial() -> str:
                     already_passed=True,  # Flag to trigger close script
                 )
         
-        # IP / VPN checks happen before showing the form
-        if is_vpn_ip(ip):
+        # IP / VPN checks happen before showing the form (single API call)
+        is_vpn, is_blocked = check_ip_status(ip)
+        
+        if is_vpn:
             return _render(
                 "We detected VPN / proxy on your connection. "
                 "Please turn it off and apply again. "
@@ -845,7 +1004,7 @@ def trial() -> str:
                 show_form=False,
             )
 
-        if is_blocked_country_ip(ip):
+        if is_blocked:
             country_name = "Pakistan" if BLOCKED_COUNTRY_CODE == "PK" else "India" if BLOCKED_COUNTRY_CODE == "IN" else BLOCKED_COUNTRY_CODE
             return _render(
                 f"Sorry, you are not eligible for this trial from your region ({country_name}). "
@@ -864,15 +1023,14 @@ def trial() -> str:
     tg_id_param: Optional[str] = request.form.get("tg_id") or request.form.get("tg_id_backup") or request.args.get("tg_id")
     
     # Try to extract and validate from Telegram Web App initData if available
-    validated_user_data = None
     if not tg_id_param or not tg_id_param.isdigit():
         # Check if this is a Telegram Web App request
         init_data = request.headers.get("X-Telegram-Init-Data") or request.form.get("_auth")
         if init_data:
             # Validate initData hash to prevent impersonation
-            validated_user_data = validate_init_data(init_data)
-            if validated_user_data and "id" in validated_user_data:
-                tg_id_param = str(validated_user_data["id"])
+            user_data = validate_init_data(init_data)
+            if user_data and "id" in user_data:
+                tg_id_param = str(user_data["id"])
     
     # Final check - if still no tg_id, return helpful error
     if not tg_id_param or not tg_id_param.isdigit():
@@ -891,8 +1049,10 @@ def trial() -> str:
             show_form=False,
         )
 
-    # Re-check VPN and India IP on POST (security: prevent bypass)
-    if is_vpn_ip(ip):
+    # Re-check VPN and blocked country on POST (security: prevent bypass)
+    is_vpn, is_blocked = check_ip_status(ip)
+    
+    if is_vpn:
         return _render(
             "We detected VPN / proxy on your connection. "
             "Please turn it off and apply again. "
@@ -900,7 +1060,7 @@ def trial() -> str:
             show_form=False,
         )
 
-    if is_blocked_country_ip(ip):
+    if is_blocked:
         country_name = "Pakistan" if BLOCKED_COUNTRY_CODE == "PK" else "India" if BLOCKED_COUNTRY_CODE == "IN" else BLOCKED_COUNTRY_CODE
         return _render(
             f"Sorry, you are not eligible for this trial from your region ({country_name}). "
@@ -910,14 +1070,24 @@ def trial() -> str:
         )
 
     # POST: user submitted form
-    name = (request.form.get("name") or "").strip()
-    country = (request.form.get("country") or "").strip()
-    email = (request.form.get("email") or "").strip()
+    # Sanitize and validate inputs
+    name = sanitize_input(request.form.get("name", ""), max_length=100)
+    country = sanitize_input(request.form.get("country", ""), max_length=100)
+    email_raw = (request.form.get("email") or "").strip()
+    email = sanitize_input(email_raw, max_length=255) if email_raw else None
     marketing_opt_in = request.form.get("marketing_opt_in") == "1"
 
+    # Validate required fields
     if not name or not country:
         return _render(
             "Name and country are required. Please fill the form again.",
+            show_form=True,
+        )
+    
+    # Validate email format if provided
+    if email_raw and not is_valid_email(email_raw):
+        return _render(
+            "Invalid email format. Please enter a valid email address or leave it empty.",
             show_form=True,
         )
 
@@ -935,18 +1105,14 @@ def trial() -> str:
     try:
         set_pending_verification(tg_id, info)
         # Verify it was saved
-        from storage import get_pending_verification as verify_get
-        verified = verify_get(tg_id)
+        verified = get_pending_verification(tg_id)
         if not verified or not verified.get("step1_ok"):
-            print(f"WARNING: Data saved but verification failed for tg_id={tg_id}")
-            print(f"Saved data: {info}")
+            logger.warning(f"Data saved but verification failed for tg_id={tg_id}. Saved data: {info}")
         else:
-            print(f"✅ Successfully saved verification for tg_id={tg_id}, name={name}")
+            logger.info(f"Successfully saved verification for tg_id={tg_id}, name={name}")
     except Exception as e:
         # Log error but don't crash - return error message to user
-        import traceback
-        print(f"❌ Error saving verification data for tg_id={tg_id}: {e}")
-        print(traceback.format_exc())
+        logger.error(f"Error saving verification data for tg_id={tg_id}: {e}", exc_info=True)
         return _render(
             f"Error saving your information. Please try again. Error: {str(e)}",
             show_form=True,
