@@ -1,6 +1,6 @@
 import os
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from dotenv import load_dotenv
 from telegram import (
@@ -66,8 +66,24 @@ print(f"   TRIAL_CHANNEL_ID: {TRIAL_CHANNEL_ID}")
 print(f"   BOT_TOKEN: {'*' * 10 if BOT_TOKEN else 'NOT SET'}")
 
 
+# Track last time check to detect clock manipulation
+_last_time_check: Optional[datetime] = None
+
 def _now_utc() -> datetime:
-    return datetime.now(timezone.utc)
+    """Get current UTC time with clock manipulation detection."""
+    global _last_time_check
+    now = datetime.now(timezone.utc)
+    
+    if _last_time_check:
+        # Check if time went backwards (clock manipulation)
+        if now < _last_time_check:
+            print(f"⚠️ CRITICAL: System clock went backwards! "
+                  f"Previous: {_last_time_check}, Now: {now}")
+            # Use previous time + small increment to prevent issues
+            now = _last_time_check + timedelta(seconds=1)
+    
+    _last_time_check = now
+    return now
 
 
 def _is_weekend(dt: datetime) -> bool:
@@ -77,6 +93,46 @@ def _is_weekend(dt: datetime) -> bool:
     local_dt = dt + timedelta(hours=TIMEZONE_OFFSET_HOURS)
     # 5 = Saturday, 6 = Sunday
     return local_dt.weekday() >= 5
+
+
+def validate_trial_data(trial_data: dict, user_id: int) -> bool:
+    """
+    Validate trial data hasn't been tampered with.
+    Returns True if valid, False if tampered.
+    """
+    if "join_time" not in trial_data or "total_hours" not in trial_data:
+        return False
+    
+    try:
+        from datetime import datetime as _dt
+        join_time = _dt.fromisoformat(trial_data["join_time"])
+        total_hours = float(trial_data["total_hours"])
+        
+        # Calculate expected end time
+        expected_end = join_time + timedelta(hours=total_hours)
+        
+        # If trial_end_at exists, it should match calculation (within 1 hour tolerance)
+        if "trial_end_at" in trial_data:
+            claimed_end = _dt.fromisoformat(trial_data["trial_end_at"])
+            time_diff = abs((claimed_end - expected_end).total_seconds())
+            if time_diff > 3600:  # More than 1 hour difference = tampering
+                print(f"⚠️ WARNING: Trial data tampering detected for user {user_id}")
+                return False
+        
+        # Check total_hours is valid (3 or 5 days only)
+        if total_hours not in [72, 120]:
+            print(f"⚠️ WARNING: Invalid total_hours ({total_hours}) for user {user_id}")
+            return False
+        
+        # Check join_time is not in future
+        if join_time > _now_utc():
+            print(f"⚠️ WARNING: Join time in future for user {user_id}")
+            return False
+        
+        return True
+    except Exception as e:
+        print(f"⚠️ Error validating trial data for user {user_id}: {e}")
+        return False
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -145,35 +201,56 @@ async def continue_verification_callback(update: Update, context: ContextTypes.D
 
     # Try to get data from local storage first (same machine)
     data = get_pending_verification(tg_id)
+    print(f"🔍 Continue verification check for tg_id={tg_id}: local data found = {data is not None}")
     
     # If not found locally, try to fetch from web app API.
     # This works even if web app and bot are on separate processes / machines,
     # as long as BASE_URL points to your HTTPS domain on the droplet.
     if not data or not data.get("step1_ok"):
+        print(f"   Local data missing or step1_ok=False, trying web app API...")
         try:
             import aiohttp
             api_url = f"{BASE_URL.rstrip('/')}/api/get-verification?tg_id={tg_id}"
-            print(f"🔍 Trying to fetch from web app API: {api_url}")
+            print(f"   🔍 Trying to fetch from web app API: {api_url}")
             async with aiohttp.ClientSession() as session:
                 async with session.get(api_url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
                     if resp.status == 200:
                         result = await resp.json()
                         if result.get("success") and result.get("data"):
                             data = result["data"]
-                            print(f"✅ Got data from web app API for tg_id={tg_id}")
+                            print(f"   ✅ Got data from web app API for tg_id={tg_id}")
+                            print(f"   Data keys: {list(data.keys())}, step1_ok: {data.get('step1_ok')}")
                             # Also save locally for future use
                             from storage import set_pending_verification
                             set_pending_verification(tg_id, data)
+                        else:
+                            print(f"   ❌ API returned success=False or no data")
+                    else:
+                        print(f"   ❌ API returned status {resp.status}")
         except Exception as e:
-            print(f"⚠️ Could not fetch from API: {e}")
+            print(f"   ⚠️ Could not fetch from API: {e}")
+            import traceback
+            print(traceback.format_exc())
             # Continue with local check
+    else:
+        print(f"   ✅ Found valid local data: step1_ok={data.get('step1_ok')}")
     
     if not data or not data.get("step1_ok"):
+        print(f"   ❌ No valid verification data found for tg_id={tg_id}")
         await query.edit_message_text(
             "We could not find your web verification.\n"
-            "Please tap 'Get Free Trial' again and complete the web step first."
+            "Please tap 'Get Free Trial' again and complete the web step first.\n\n"
+            "⚠️ Make sure you:\n"
+            "1. Open the verification page\n"
+            "2. Turn off VPN/Proxy\n"
+            "3. Fill in your details (name, country, email optional)\n"
+            "4. Submit the form\n"
+            "5. Close the mini-app\n"
+            "6. Then click 'Continue verification'"
         )
         return
+    
+    print(f"   ✅ Verification Step 1 confirmed passed for tg_id={tg_id}")
 
     contact_button = KeyboardButton(text="📱 Share phone number", request_contact=True)
     keyboard = ReplyKeyboardMarkup([[contact_button]], resize_keyboard=True, one_time_keyboard=True)
@@ -306,7 +383,15 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     # Ensure the shared contact belongs to the same user
-    if contact.user_id and contact.user_id != user.id:
+    # Improved validation: require user_id to match (prevents sharing other contacts)
+    if not contact.user_id:
+        await update.message.reply_text(
+            "Please share your phone number directly from Telegram. "
+            "The contact must be linked to your Telegram account."
+        )
+        return
+    
+    if contact.user_id != user.id:
         await update.message.reply_text("Please share your own phone number using the button.")
         return
 
@@ -335,25 +420,34 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     set_pending_verification(user.id, data)
 
     # Before generating a new invite link, check if user recently generated one
+    # Use storage lock to prevent race condition (multiple rapid clicks)
     now = _now_utc()
-    invite_info = get_invite_info(user.id)
-    if invite_info and "invite_expires_at" in invite_info:
-        from datetime import datetime as _dt
+    from storage import _lock
+    
+    existing_link = None
+    with _lock:
+        invite_info = get_invite_info(user.id)
+        if invite_info and "invite_expires_at" in invite_info:
+            from datetime import datetime as _dt
 
-        try:
-            expires_at = _dt.fromisoformat(invite_info["invite_expires_at"])
-            if now < expires_at and invite_info.get("invite_link"):
-                # Existing invite still valid; ask user to reuse it
-                await update.message.reply_text(
-                    "You already generated a trial invite link recently.\n\n"
-                    "Please use this link to join the trial channel:\n"
-                    f"{invite_info['invite_link']}\n\n"
-                    "If you have any issues accessing it, use /support to contact us."
-                )
-                return
-        except Exception:
-            # If parsing fails, fall through and create a fresh link
-            pass
+            try:
+                expires_at = _dt.fromisoformat(invite_info["invite_expires_at"])
+                if now < expires_at and invite_info.get("invite_link"):
+                    # Existing invite still valid
+                    existing_link = invite_info['invite_link']
+            except Exception:
+                # If parsing fails, fall through and create a fresh link
+                pass
+    
+    # Send message outside lock to avoid blocking
+    if existing_link:
+        await update.message.reply_text(
+            "You already generated a trial invite link recently.\n\n"
+            "Please use this link to join the trial channel:\n"
+            f"{existing_link}\n\n"
+            "If you have any issues accessing it, use /support to contact us."
+        )
+        return
 
     await update.message.reply_text("Verification 2 passed ✅. Generating your one-time invite link...")
 
@@ -405,13 +499,70 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     clear_pending_verification(user.id)
 
 
-def _is_weekend(dt: datetime) -> bool:
+async def periodic_trial_cleanup(context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    Weekend check in local time (controlled via TIMEZONE_OFFSET_HOURS).
+    Periodic cleanup job that runs every hour to check all active trials
+    and end expired ones. This is a fallback in case scheduled jobs fail.
     """
-    local_dt = dt + timedelta(hours=TIMEZONE_OFFSET_HOURS)
-    # 5 = Saturday, 6 = Sunday
-    return local_dt.weekday() >= 5
+    now = _now_utc()
+    active_trials = get_all_active_trials()
+    
+    cleaned_count = 0
+    for tg_id_str, info in active_trials.items():
+        try:
+            user_id = int(tg_id_str)
+            
+            # Validate trial data first
+            if not validate_trial_data(info, user_id):
+                print(f"⚠️ Invalid trial data for user {user_id}, cleaning up")
+                clear_active_trial(user_id)
+                cleaned_count += 1
+                continue
+            
+            trial_end_at_str = info.get("trial_end_at")
+            if not trial_end_at_str:
+                continue
+            
+            from datetime import datetime as _dt
+            end_at = _dt.fromisoformat(trial_end_at_str)
+            
+            # If trial expired, end it now
+            if now >= end_at:
+                # Mark as used
+                mark_trial_used(user_id, {
+                    "trial_ended_at": now.isoformat(),
+                    "ended_by": "periodic_cleanup"
+                })
+                
+                # Remove from channel
+                try:
+                    await context.bot.ban_chat_member(TRIAL_CHANNEL_ID, user_id)
+                    await context.bot.unban_chat_member(TRIAL_CHANNEL_ID, user_id)
+                except Exception:
+                    pass
+                
+                # Clear active trial
+                clear_active_trial(user_id)
+                cleaned_count += 1
+                
+                # Notify user
+                try:
+                    await context.bot.send_message(
+                        chat_id=user_id,
+                        text=(
+                            "⛔ Your trial has finished. If you enjoyed the signals, you can upgrade "
+                            "to a paid plan to continue."
+                        ),
+                    )
+                except Exception:
+                    pass
+                
+                print(f"✅ Cleaned up expired trial for user {user_id}")
+        except Exception as e:
+            print(f"⚠️ Error in periodic cleanup for {tg_id_str}: {e}")
+    
+    if cleaned_count > 0:
+        print(f"✅ Periodic cleanup: Ended {cleaned_count} expired trial(s)")
 
 
 async def trial_chat_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -427,47 +578,62 @@ async def trial_chat_member_update(update: Update, context: ContextTypes.DEFAULT
     # Detect join: previously left/kicked, now member/admin
     if old.status in ("left", "kicked") and new.status in ("member", "administrator"):
         user = new.user
-
-        # If user has already used their trial, do not start another one
-        if has_used_trial(user.id):
-            await context.bot.send_message(
-                chat_id=user.id,
-                text=(
-                    "You have already used your free 3-day trial once.\n\n"
-                    "🎁 For more chances, you can join our giveaway channel:\n"
-                    "https://t.me/Freya_Trades\n\n"
-                    "💬 Or DM @cogitosk to upgrade to the premium signals."
-                ),
-            )
-            # Ensure they are not kept in the trial channel
-            try:
-                await context.bot.ban_chat_member(TRIAL_CHANNEL_ID, user.id)
-                await context.bot.unban_chat_member(TRIAL_CHANNEL_ID, user.id)
-            except Exception:
-                pass
-            return
-
         now = _now_utc()
 
-        if _is_weekend(now):
-            trial_days = 5
-            total_hours = 120
-        else:
-            trial_days = 3
-            total_hours = 72
-
+        # Check if user has already used a trial (prevent rejoin extension exploit)
+        if has_used_trial(user.id):
+            # User already used trial - check if enough time has passed (30 day cooldown)
+            from storage import _load_json
+            import os
+            USED_TRIALS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "used_trials.json")
+            used_data = _load_json(USED_TRIALS_FILE, {})
+            user_trial_info = used_data.get(str(user.id), {})
+            
+            # Check when trial ended
+            trial_ended_at_str = user_trial_info.get("trial_ended_at") or user_trial_info.get("left_early_at")
+            if trial_ended_at_str:
+                try:
+                    from datetime import datetime as _dt
+                    ended_at = _dt.fromisoformat(trial_ended_at_str)
+                    days_since_end = (now - ended_at).total_seconds() / 86400
+                    
+                    if days_since_end < 30:  # 30 day cooldown period
+                        await context.bot.send_message(
+                            chat_id=user.id,
+                            text=(
+                                "You recently used a trial. Please wait 30 days before requesting another.\n\n"
+                                "🎁 For more chances, you can join our giveaway channel:\n"
+                                "https://t.me/Freya_Trades\n\n"
+                                "💬 Or DM @cogitosk to upgrade to the premium signals."
+                            ),
+                        )
+                        # Remove from channel
+                        try:
+                            await context.bot.ban_chat_member(TRIAL_CHANNEL_ID, user.id)
+                            await context.bot.unban_chat_member(TRIAL_CHANNEL_ID, user.id)
+                        except Exception:
+                            pass
+                        return
+                except Exception:
+                    pass
+        
         # If an active trial already exists and has not yet expired, avoid double-scheduling
         existing = get_active_trial(user.id)
-        if existing and "trial_end_at" in existing:
-            from datetime import datetime as _dt
+        if existing:
+            # Validate trial data hasn't been tampered with
+            if not validate_trial_data(existing, user.id):
+                print(f"⚠️ Invalid trial data for user {user.id}, clearing and restarting")
+                clear_active_trial(user.id)
+            elif "trial_end_at" in existing:
+                from datetime import datetime as _dt
 
-            try:
-                end_at = _dt.fromisoformat(existing["trial_end_at"])
-                if now < end_at:
-                    # Trial is already running; do not re-start it
-                    return
-            except Exception:
-                pass
+                try:
+                    end_at = _dt.fromisoformat(existing["trial_end_at"])
+                    if now < end_at:
+                        # Trial is already running; do not re-start it
+                        return
+                except Exception:
+                    pass
 
         trial_end_at = now + timedelta(hours=total_hours)
 
@@ -704,6 +870,12 @@ def main() -> None:
             except ValueError:
                 continue
 
+            # Validate trial data hasn't been tampered with
+            if not validate_trial_data(info, user_id):
+                print(f"⚠️ Invalid trial data for user {user_id} on restore, clearing")
+                clear_active_trial(user_id)
+                continue
+
             trial_end_at_str = info.get("trial_end_at")
             join_time_str = info.get("join_time")
             total_hours = info.get("total_hours")
@@ -733,6 +905,18 @@ def main() -> None:
             )
     except Exception as e:
         print(f"⚠️ Failed to restore active trial jobs: {e}")
+    
+    # Add periodic cleanup job as fallback (runs every hour)
+    # This ensures trials end even if scheduled jobs fail
+    try:
+        application.job_queue.run_repeating(
+            periodic_trial_cleanup,
+            interval=timedelta(hours=1),  # Check every hour
+            first=timedelta(minutes=5)  # Start 5 minutes after bot starts
+        )
+        print("✅ Periodic trial cleanup job scheduled")
+    except Exception as e:
+        print(f"⚠️ Failed to schedule periodic cleanup job: {e}")
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("faq", faq_command))

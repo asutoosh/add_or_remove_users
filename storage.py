@@ -1,6 +1,8 @@
 import json
 import os
+import stat
 import threading
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional, List
 
 
@@ -30,7 +32,10 @@ def _save_json(path: str, data: Any) -> None:
     tmp_path = f"{path}.tmp"
     with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
+    # Set restrictive permissions (owner read/write only) for security
+    os.chmod(tmp_path, stat.S_IRUSR | stat.S_IWUSR)
     os.replace(tmp_path, path)
+    os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
 
 
 def get_pending_verification(tg_id: int) -> Optional[Dict[str, Any]]:
@@ -157,5 +162,40 @@ def set_invite_info(tg_id: int, info: Dict[str, Any]) -> None:
         data = _load_json(INVITES_FILE, {})
         data[str(tg_id)] = info
         _save_json(INVITES_FILE, data)
+
+
+def check_rate_limit(tg_id: int, action: str, max_attempts: int = 5, window_minutes: int = 15) -> bool:
+    """
+    Check if user exceeded rate limit for a specific action.
+    Returns True if allowed, False if rate limited.
+    """
+    with _lock:
+        data = _load_json(PENDING_FILE, {})
+        user_data = data.get(str(tg_id), {})
+        
+        rate_key = f"{action}_attempts"
+        attempts = user_data.get(rate_key, [])
+        now = datetime.now(timezone.utc)
+        
+        # Remove attempts older than window
+        valid_attempts = []
+        for ts_str in attempts:
+            try:
+                ts = datetime.fromisoformat(ts_str)
+                if (now - ts).total_seconds() < window_minutes * 60:
+                    valid_attempts.append(ts_str)
+            except Exception:
+                pass
+        
+        if len(valid_attempts) >= max_attempts:
+            return False  # Rate limited
+        
+        # Add current attempt
+        valid_attempts.append(now.isoformat())
+        user_data[rate_key] = valid_attempts
+        data[str(tg_id)] = user_data
+        _save_json(PENDING_FILE, data)
+        
+        return True  # Allowed
 
 

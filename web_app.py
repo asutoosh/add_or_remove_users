@@ -2,11 +2,15 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import os
+import hmac
+import hashlib
+import urllib.parse
+import json
 import requests
 from dotenv import load_dotenv
 from flask import Flask, request, render_template_string, jsonify
 
-from storage import set_pending_verification, get_pending_verification
+from storage import set_pending_verification, get_pending_verification, check_rate_limit
 
 
 # Load .env if present (for droplet: we typically use a .env file in the app directory)
@@ -16,12 +20,64 @@ IP2LOCATION_API_KEY = os.environ.get("IP2LOCATION_API_KEY", "")
 # Blocked country code (e.g., "IN" for India, "PK" for Pakistan)
 # Set via environment variable, defaults to "PK" for testing
 BLOCKED_COUNTRY_CODE = os.environ.get("BLOCKED_COUNTRY_CODE", "PK").upper()
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 
 app = Flask(__name__)
 
 
 def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def validate_init_data(init_data: str) -> Optional[dict]:
+    """
+    Validate Telegram Web App initData hash to prevent impersonation.
+    Returns user data dict if valid, None otherwise.
+    """
+    if not BOT_TOKEN:
+        # If no bot token, skip validation (for local testing only)
+        print("⚠️ WARNING: BOT_TOKEN not set, skipping initData validation")
+        return None
+    
+    try:
+        parsed = urllib.parse.parse_qs(init_data)
+        hash_value = parsed.get('hash', [None])[0]
+        if not hash_value:
+            return None
+        
+        # Remove hash from data and create check string
+        data_check_string = '&'.join(
+            f"{k}={v[0]}" 
+            for k, v in sorted(parsed.items()) 
+            if k != 'hash'
+        )
+        
+        # Create secret key using Telegram's method
+        secret_key = hmac.new(
+            b"WebAppData",
+            BOT_TOKEN.encode(),
+            hashlib.sha256
+        ).digest()
+        
+        # Validate hash
+        calculated_hash = hmac.new(
+            secret_key,
+            data_check_string.encode(),
+            hashlib.sha256
+        ).hexdigest()
+        
+        if calculated_hash != hash_value:
+            print(f"⚠️ Invalid initData hash - possible tampering detected")
+            return None
+        
+        # Parse user data if present
+        if 'user' in parsed:
+            user_data = json.loads(parsed['user'][0])
+            return user_data
+    except Exception as e:
+        print(f"⚠️ Error validating initData: {e}")
+        return None
+    return None
 
 
 def get_client_ip() -> str:
@@ -807,23 +863,16 @@ def trial() -> str:
     # For POST requests: Require tg_id (from form data, query param, or Telegram Web App initData)
     tg_id_param: Optional[str] = request.form.get("tg_id") or request.form.get("tg_id_backup") or request.args.get("tg_id")
     
-    # Fallback: Try to extract from Telegram Web App initData if available
+    # Try to extract and validate from Telegram Web App initData if available
+    validated_user_data = None
     if not tg_id_param or not tg_id_param.isdigit():
         # Check if this is a Telegram Web App request
         init_data = request.headers.get("X-Telegram-Init-Data") or request.form.get("_auth")
         if init_data:
-            # Try to parse initData (basic extraction - in production you should validate the hash)
-            try:
-                import urllib.parse
-                parsed = urllib.parse.parse_qs(init_data)
-                if "user" in parsed:
-                    user_str = parsed["user"][0]
-                    import json
-                    user_data = json.loads(user_str)
-                    if "id" in user_data:
-                        tg_id_param = str(user_data["id"])
-            except Exception:
-                pass
+            # Validate initData hash to prevent impersonation
+            validated_user_data = validate_init_data(init_data)
+            if validated_user_data and "id" in validated_user_data:
+                tg_id_param = str(validated_user_data["id"])
     
     # Final check - if still no tg_id, return helpful error
     if not tg_id_param or not tg_id_param.isdigit():
@@ -834,6 +883,13 @@ def trial() -> str:
         )
     
     tg_id = int(tg_id_param)
+    
+    # Rate limiting: prevent spam/abuse
+    if not check_rate_limit(tg_id, "verification", max_attempts=3, window_minutes=60):
+        return _render(
+            "Too many verification attempts. Please wait 60 minutes before trying again.",
+            show_form=False,
+        )
 
     # Re-check VPN and India IP on POST (security: prevent bypass)
     if is_vpn_ip(ip):
