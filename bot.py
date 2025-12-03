@@ -617,6 +617,14 @@ async def trial_chat_member_update(update: Update, context: ContextTypes.DEFAULT
                 except Exception:
                     pass
         
+        # Determine trial duration based on weekend
+        if _is_weekend(now):
+            trial_days = 5
+            total_hours = 120
+        else:
+            trial_days = 3
+            total_hours = 72
+
         # If an active trial already exists and has not yet expired, avoid double-scheduling
         existing = get_active_trial(user.id)
         if existing:
