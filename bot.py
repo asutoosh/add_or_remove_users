@@ -214,6 +214,35 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
+    # Check if user has an ACTIVE trial (currently in trial period)
+    active_trial = get_active_trial(user.id)
+    if active_trial and "join_time" in active_trial and "total_hours" in active_trial:
+        try:
+            join_time = _parse_iso_to_utc(active_trial["join_time"])
+            total_hours = float(active_trial["total_hours"])
+            trial_end_at = join_time + timedelta(hours=total_hours)
+            now = _now_utc()
+            
+            # If trial hasn't ended yet, user is still in active trial
+            if now < trial_end_at:
+                elapsed_hours = (now - join_time).total_seconds() / 3600.0
+                remaining_hours = total_hours - elapsed_hours
+                elapsed_rounded = round(elapsed_hours, 1)
+                remaining_rounded = round(remaining_hours, 1)
+                total_days = int(total_hours / 24)
+                
+                await update.message.reply_text(
+                    f"✅ You are currently in your {total_days}-day free trial!\n\n"
+                    f"⏱ Time elapsed: {elapsed_rounded} hours\n"
+                    f"⏳ Time remaining: {remaining_rounded} hours\n\n"
+                    "You will receive reminders as your trial approaches the end.\n\n"
+                    f"💬 Questions? DM {SUPPORT_CONTACT}",
+                )
+                return
+        except Exception as e:
+            logger.warning(f"Error checking active trial for user {user.id}: {e}")
+            # Continue to show normal start message if check fails
+
     keyboard = [
         [InlineKeyboardButton("🎁 Get Free Trial", callback_data="start_trial")],
     ]
@@ -243,6 +272,35 @@ async def start_trial_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             f"💬 Or DM {SUPPORT_CONTACT} to upgrade to the premium signals.",
         )
         return
+
+    # Check if user has an ACTIVE trial (currently in trial period)
+    active_trial = get_active_trial(tg_id)
+    if active_trial and "join_time" in active_trial and "total_hours" in active_trial:
+        try:
+            join_time = _parse_iso_to_utc(active_trial["join_time"])
+            total_hours = float(active_trial["total_hours"])
+            trial_end_at = join_time + timedelta(hours=total_hours)
+            now = _now_utc()
+            
+            # If trial hasn't ended yet, user is still in active trial
+            if now < trial_end_at:
+                elapsed_hours = (now - join_time).total_seconds() / 3600.0
+                remaining_hours = total_hours - elapsed_hours
+                elapsed_rounded = round(elapsed_hours, 1)
+                remaining_rounded = round(remaining_hours, 1)
+                total_days = int(total_hours / 24)
+                
+                await query.edit_message_text(
+                    f"✅ You are currently in your {total_days}-day free trial!\n\n"
+                    f"⏱ Time elapsed: {elapsed_rounded} hours\n"
+                    f"⏳ Time remaining: {remaining_rounded} hours\n\n"
+                    "You will receive reminders as your trial approaches the end.\n\n"
+                    f"💬 Questions? DM {SUPPORT_CONTACT}",
+                )
+                return
+        except Exception as e:
+            logger.warning(f"Error checking active trial for user {tg_id}: {e}")
+            # Continue to show verification page if check fails
 
     # Build URL - use Web App if HTTPS, fallback to regular URL if HTTP
     # Telegram Web Apps require HTTPS, so we check BASE_URL scheme
@@ -862,12 +920,16 @@ async def trial_chat_member_update(update: Update, context: ContextTypes.DEFAULT
         logger.info(f"Processing leave for user_id={user.id}, username={user.username}")
 
         # Try to compute how many trial hours they used and how many were remaining
-        remaining_info = ""
+        usage_info = ""
+        total_days = 3  # Default
         try:
             active = get_active_trial(user.id)
+            logger.debug(f"Active trial data for user {user.id}: {active}")
+            
             if active and "join_time" in active and "total_hours" in active:
                 join_time = _parse_iso_to_utc(active["join_time"])
                 total_hours = float(active["total_hours"])
+                total_days = int(total_hours / 24)
                 now = _now_utc()
                 elapsed_hours = (now - join_time).total_seconds() / 3600.0
                 remaining_hours = max(0.0, total_hours - elapsed_hours)
@@ -876,27 +938,35 @@ async def trial_chat_member_update(update: Update, context: ContextTypes.DEFAULT
                 elapsed_hours_rounded = round(elapsed_hours, 1)
                 remaining_hours_rounded = round(remaining_hours, 1)
 
-                remaining_info = (
-                    f"\n\nYou used about {elapsed_hours_rounded} hours "
-                    f"of your free trial and had about {remaining_hours_rounded} hours remaining."
+                usage_info = (
+                    f"\n\n📊 Trial Usage Summary:\n"
+                    f"• You consumed: {elapsed_hours_rounded} hours out of {int(total_hours)} hours ({total_days} days)\n"
+                    f"• Remaining unused: {remaining_hours_rounded} hours"
                 )
-                logger.info(f"User {user.id} used {elapsed_hours_rounded} hours, {remaining_hours_rounded} remaining")
+                logger.info(f"User {user.id} consumed {elapsed_hours_rounded}/{total_hours} hours, {remaining_hours_rounded} remaining")
             else:
-                logger.info(f"No active trial found for user {user.id} (may have already been cleared)")
+                logger.warning(f"No active trial found for user {user.id} (may have already been cleared or never started)")
+                # Still send a generic message
+                usage_info = "\n\nYour trial data was not found - it may have already expired."
         except Exception as e:
-            logger.warning(f"Failed to compute remaining trial hours for user_id={user.id}: {e}", exc_info=True)
+            logger.error(f"Failed to compute remaining trial hours for user_id={user.id}: {e}", exc_info=True)
+            usage_info = ""  # Continue without usage info
 
         # Send message to user about leaving
         try:
+            leave_message = (
+                f"👋 You have left the trial channel.\n"
+                f"{usage_info}\n\n"
+                f"Your free {total_days}-day trial has been marked as consumed.\n\n"
+                "We hope you enjoyed testing our signals! 🙌\n\n"
+                f"📝 We'd love to hear your feedback:\n{FEEDBACK_FORM_URL}\n\n"
+                f"🎁 For more chances, join our giveaway: {GIVEAWAY_CHANNEL_URL}\n"
+                f"💬 Ready to upgrade? DM {SUPPORT_CONTACT}"
+            )
+            
             await context.bot.send_message(
                 chat_id=user.id,
-                text=(
-                    "We noticed you left the trial channel before your trial finished.\n"
-                    f"{remaining_info}\n\n"
-                    "We hope you had a great time testing our signals 🙌\n"
-                    "It would mean a lot if you could share quick feedback here:\n"
-                    f"{FEEDBACK_FORM_URL}"
-                ),
+                text=leave_message,
             )
             logger.info(f"Successfully sent leave message to user {user.id}")
         except Exception as e:
@@ -905,12 +975,17 @@ async def trial_chat_member_update(update: Update, context: ContextTypes.DEFAULT
 
         # Treat this as a consumed trial as well
         try:
-            mark_trial_used(
-                user.id,
-                {
-                    "left_early_at": _now_utc().isoformat(),
-                },
-            )
+            # Store more detailed info about the early leave
+            active = get_active_trial(user.id)
+            leave_info = {
+                "left_early_at": _now_utc().isoformat(),
+                "reason": "user_left_channel"
+            }
+            if active:
+                leave_info["join_time"] = active.get("join_time")
+                leave_info["total_hours"] = active.get("total_hours")
+            
+            mark_trial_used(user.id, leave_info)
             logger.info(f"Marked trial as used for user {user.id} (left early)")
         except Exception as e:
             logger.warning(f"Failed to mark trial used on early leave for user_id={user.id}: {e}", exc_info=True)
@@ -923,43 +998,79 @@ async def trial_chat_member_update(update: Update, context: ContextTypes.DEFAULT
             logger.warning(f"Failed to clear active trial for user_id={user.id}: {e}", exc_info=True)
 
 
+async def _send_trial_reminder(context: ContextTypes.DEFAULT_TYPE, user_id: int, message: str) -> bool:
+    """
+    Helper function to send trial reminders with proper error handling.
+    Returns True if message was sent successfully, False otherwise.
+    """
+    # Check if user still has an active trial before sending reminder
+    active_trial = get_active_trial(user_id)
+    if not active_trial:
+        logger.info(f"Skipping reminder for user {user_id} - no active trial (user may have left)")
+        return False
+    
+    # Verify trial hasn't expired yet
+    try:
+        trial_end_str = active_trial.get("trial_end_at")
+        if trial_end_str:
+            trial_end_at = _parse_iso_to_utc(trial_end_str)
+            if _now_utc() >= trial_end_at:
+                logger.info(f"Skipping reminder for user {user_id} - trial already expired")
+                return False
+    except Exception as e:
+        logger.warning(f"Error checking trial expiry for user {user_id}: {e}")
+    
+    try:
+        await context.bot.send_message(chat_id=user_id, text=message)
+        logger.info(f"Successfully sent trial reminder to user {user_id}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send trial reminder to user {user_id}: {e}")
+        return False
+
+
 async def trial_reminder_3day_1(context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = context.job.data["user_id"]
-    await context.bot.send_message(
-        chat_id=user_id,
-        text="⏱ 1 day has passed, 2 days remaining in your trial.",
+    await _send_trial_reminder(
+        context, user_id,
+        "⏱ 1 day (24 hours) has passed, 2 days remaining in your trial.\n\n"
+        f"💬 Enjoying the signals? Upgrade anytime by contacting {SUPPORT_CONTACT}"
     )
 
 
 async def trial_reminder_3day_2(context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = context.job.data["user_id"]
-    await context.bot.send_message(
-        chat_id=user_id,
-        text="⏱ 2 days have passed. Only the last 24 hours left in your trial!",
+    await _send_trial_reminder(
+        context, user_id,
+        "⏱ 2 days (48 hours) have passed. Only the last 24 hours left in your trial!\n\n"
+        f"⚡ Don't miss out! Contact {SUPPORT_CONTACT} to upgrade and keep receiving signals."
     )
 
 
 async def trial_reminder_5day_1(context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = context.job.data["user_id"]
-    await context.bot.send_message(
-        chat_id=user_id,
-        text="⏱ 1 day has passed, 4 days remaining in your 5-day trial.",
+    await _send_trial_reminder(
+        context, user_id,
+        "⏱ 1 day (24 hours) has passed, 4 days remaining in your 5-day trial.\n\n"
+        f"💬 Enjoying the signals? Upgrade anytime by contacting {SUPPORT_CONTACT}"
     )
 
 
 async def trial_reminder_5day_3(context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = context.job.data["user_id"]
-    await context.bot.send_message(
-        chat_id=user_id,
-        text="⏱ 3 days have passed, 2 days remaining in your 5-day trial.",
+    await _send_trial_reminder(
+        context, user_id,
+        "⏱ 3 days (72 hours) have passed, 2 days remaining in your 5-day trial.\n\n"
+        f"💬 Questions about upgrading? Contact {SUPPORT_CONTACT}"
     )
 
 
 async def trial_reminder_5day_4(context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = context.job.data["user_id"]
-    await context.bot.send_message(
-        chat_id=user_id,
-        text="⏱ 4 days have passed. Only the last 24 hours left in your trial!",
+    await _send_trial_reminder(
+        context, user_id,
+        "⏱ 4 days (96 hours) have passed. Only the last 24 hours left in your trial!\n\n"
+        f"⚡ Don't miss out! Contact {SUPPORT_CONTACT} to upgrade and keep receiving signals."
     )
 
 

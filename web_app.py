@@ -14,7 +14,7 @@ import requests
 from dotenv import load_dotenv
 from flask import Flask, request, render_template_string, jsonify
 
-from storage import set_pending_verification, get_pending_verification, check_rate_limit, has_used_trial
+from storage import set_pending_verification, get_pending_verification, check_rate_limit, has_used_trial, get_active_trial
 
 # Configure logging
 logging.basicConfig(
@@ -998,6 +998,39 @@ def trial() -> str:
                     show_form=False,
                 )
             
+            # SECOND: Check if user has an ACTIVE trial (currently in trial period)
+            active_trial = get_active_trial(tg_id)
+            if active_trial and "join_time" in active_trial and "total_hours" in active_trial:
+                try:
+                    from datetime import datetime, timezone, timedelta
+                    join_time_str = active_trial["join_time"]
+                    join_time = datetime.fromisoformat(join_time_str)
+                    if join_time.tzinfo is None:
+                        join_time = join_time.replace(tzinfo=timezone.utc)
+                    total_hours = float(active_trial["total_hours"])
+                    trial_end_at = join_time + timedelta(hours=total_hours)
+                    now = _now_utc()
+                    
+                    # If trial hasn't ended yet, user is in active trial
+                    if now < trial_end_at:
+                        elapsed_hours = (now - join_time).total_seconds() / 3600.0
+                        remaining_hours = total_hours - elapsed_hours
+                        elapsed_rounded = round(elapsed_hours, 1)
+                        remaining_rounded = round(remaining_hours, 1)
+                        total_days = int(total_hours / 24)
+                        
+                        return _render(
+                            f"✅ You are currently in your {total_days}-day free trial!\n\n"
+                            f"⏱ Time elapsed: {elapsed_rounded} hours\n"
+                            f"⏳ Time remaining: {remaining_rounded} hours\n\n"
+                            "Please close this window and go back to Telegram.\n\n"
+                            f"💬 Questions? DM {SUPPORT_CONTACT}",
+                            show_form=False,
+                        )
+                except Exception as e:
+                    logger.warning(f"Error checking active trial for tg_id {tg_id}: {e}")
+                    # Continue if check fails
+            
             existing_data = get_pending_verification(tg_id)
             if existing_data and existing_data.get("step1_ok"):
                 # User already passed step1 - show message and close Web App
@@ -1066,6 +1099,38 @@ def trial() -> str:
             f"💬 Or DM {SUPPORT_CONTACT} to upgrade to the premium signals.",
             show_form=False,
         )
+    
+    # SECOND: Check if user has an ACTIVE trial (currently in trial period)
+    active_trial = get_active_trial(tg_id)
+    if active_trial and "join_time" in active_trial and "total_hours" in active_trial:
+        try:
+            join_time_str = active_trial["join_time"]
+            join_time = datetime.fromisoformat(join_time_str)
+            if join_time.tzinfo is None:
+                join_time = join_time.replace(tzinfo=timezone.utc)
+            total_hours = float(active_trial["total_hours"])
+            trial_end_at = join_time + timedelta(hours=total_hours)
+            now = _now_utc()
+            
+            # If trial hasn't ended yet, user is in active trial
+            if now < trial_end_at:
+                elapsed_hours = (now - join_time).total_seconds() / 3600.0
+                remaining_hours = total_hours - elapsed_hours
+                elapsed_rounded = round(elapsed_hours, 1)
+                remaining_rounded = round(remaining_hours, 1)
+                total_days = int(total_hours / 24)
+                
+                return _render(
+                    f"✅ You are currently in your {total_days}-day free trial!\n\n"
+                    f"⏱ Time elapsed: {elapsed_rounded} hours\n"
+                    f"⏳ Time remaining: {remaining_rounded} hours\n\n"
+                    "Please close this window and go back to Telegram.\n\n"
+                    f"💬 Questions? DM {SUPPORT_CONTACT}",
+                    show_form=False,
+                )
+        except Exception as e:
+            logger.warning(f"Error checking active trial for tg_id {tg_id}: {e}")
+            # Continue if check fails
     
     # Rate limiting: prevent spam/abuse
     if not check_rate_limit(tg_id, "verification", max_attempts=3, window_minutes=60):
