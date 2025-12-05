@@ -35,5 +35,5 @@ Thumbs.db
 deployment guide.md
 RENDER_DEPLOYMENT.md
 *.md
-
+md/
 .cursor/
