@@ -59,6 +59,7 @@ from telegram import (
     InlineKeyboardMarkup,
     KeyboardButton,
     ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
     WebAppInfo,
 )
 from telegram.ext import (
@@ -527,6 +528,49 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not contact:
         return
 
+    logger.info(f"Contact handler triggered for user {user.id} ({user.username})")
+
+    # CRITICAL: Check if user has already used their trial FIRST
+    # This prevents the exploit where users click "Share phone number" button repeatedly
+    if has_used_trial(user.id):
+        logger.warning(f"User {user.id} tried to share phone but already used trial")
+        await update.message.reply_text(
+            "You have already used your free 3-day trial once.\n\n"
+            "🎁 For more chances, you can join our giveaway channel:\n"
+            f"{GIVEAWAY_CHANNEL_URL}\n\n"
+            f"💬 Or DM {SUPPORT_CONTACT} to upgrade to the premium signals.",
+            reply_markup=ReplyKeyboardRemove(),  # Remove the keyboard
+        )
+        return
+
+    # Check if user has an ACTIVE trial (already in channel)
+    active_trial = get_active_trial(user.id)
+    if active_trial and "join_time" in active_trial and "total_hours" in active_trial:
+        try:
+            join_time = _parse_iso_to_utc(active_trial["join_time"])
+            total_hours = float(active_trial["total_hours"])
+            trial_end_at = join_time + timedelta(hours=total_hours)
+            now = _now_utc()
+            
+            if now < trial_end_at:
+                elapsed_hours = (now - join_time).total_seconds() / 3600.0
+                remaining_hours = total_hours - elapsed_hours
+                elapsed_rounded = round(elapsed_hours, 1)
+                remaining_rounded = round(remaining_hours, 1)
+                total_days = int(total_hours / 24)
+                
+                logger.warning(f"User {user.id} tried to share phone but already has active trial")
+                await update.message.reply_text(
+                    f"✅ You are already in your {total_days}-day free trial!\n\n"
+                    f"⏱ Time elapsed: {elapsed_rounded} hours\n"
+                    f"⏳ Time remaining: {remaining_rounded} hours\n\n"
+                    "No need to verify again - you're already in the trial channel!",
+                    reply_markup=ReplyKeyboardRemove(),  # Remove the keyboard
+                )
+                return
+        except Exception as e:
+            logger.warning(f"Error checking active trial in contact_handler for user {user.id}: {e}")
+
     # Ensure the shared contact belongs to the same user
     # Improved validation: require user_id to match (prevents sharing other contacts)
     if not contact.user_id:
@@ -555,7 +599,8 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await update.message.reply_text(
             "You are not eligible for this trial with this phone number.\n"
             "We store minimal information only for security and abuse-prevention. "
-            "You can request deletion at any time."
+            "You can request deletion at any time.",
+            reply_markup=ReplyKeyboardRemove(),  # Remove the keyboard
         )
         return
 
@@ -571,11 +616,13 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     
     # Send message if existing link is valid
     if existing_link:
+        logger.info(f"User {user.id} already has valid invite link, returning existing")
         await update.message.reply_text(
             "You already generated a trial invite link recently.\n\n"
             "Please use this link to join the trial channel:\n"
             f"{existing_link}\n\n"
-            "If you have any issues accessing it, use /support to contact us."
+            "If you have any issues accessing it, use /support to contact us.",
+            reply_markup=ReplyKeyboardRemove(),  # Remove the keyboard
         )
         return
 
@@ -590,9 +637,12 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             member_limit=1,
             expire_date=int(expires_at_dt.timestamp()),
         )
+        logger.info(f"Created invite link for user {user.id}: {invite_link.invite_link}")
     except Exception as e:  # pragma: no cover - defensive
+        logger.error(f"Failed to create invite link for user {user.id}: {e}")
         await update.message.reply_text(
-            "Failed to create an invite link. Please try again later."
+            "Failed to create an invite link. Please try again later.",
+            reply_markup=ReplyKeyboardRemove(),  # Remove the keyboard
         )
         return
 
@@ -609,7 +659,8 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await update.message.reply_text(
         "Here is your one-time invite link to the private trial channel.\n"
         "Please do not share it with others:\n"
-        f"{invite_link.invite_link}"
+        f"{invite_link.invite_link}",
+        reply_markup=ReplyKeyboardRemove(),  # Remove the keyboard to prevent re-use
     )
 
     # Log minimal info for your records
@@ -696,6 +747,8 @@ async def periodic_trial_cleanup(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def trial_chat_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle chat member updates (join/leave) in the trial channel."""
+    logger.info("=== trial_chat_member_update TRIGGERED ===")
+    
     if not update.chat_member:
         logger.warning("trial_chat_member_update called but update.chat_member is None")
         return
@@ -703,14 +756,16 @@ async def trial_chat_member_update(update: Update, context: ContextTypes.DEFAULT
     chat_member = update.chat_member
     chat = chat_member.chat
 
-    logger.debug(f"Chat member update received for chat_id={chat.id}, TRIAL_CHANNEL_ID={TRIAL_CHANNEL_ID}")
+    logger.info(f"Chat member update: chat_id={chat.id}, chat_title={chat.title}, TRIAL_CHANNEL_ID={TRIAL_CHANNEL_ID}")
     
     if chat.id != TRIAL_CHANNEL_ID:
-        logger.debug(f"Ignoring chat member update for chat_id={chat.id} (not trial channel)")
+        logger.info(f"Ignoring chat member update for chat_id={chat.id} (not trial channel {TRIAL_CHANNEL_ID})")
         return
 
     old = chat_member.old_chat_member
     new = chat_member.new_chat_member
+    
+    logger.info(f"Member status change: user={new.user.id if new.user else 'None'}, old_status={old.status}, new_status={new.status}")
 
     # Detect join: previously left/kicked, now member/admin
     if old.status in ("left", "kicked") and new.status in ("member", "administrator"):
