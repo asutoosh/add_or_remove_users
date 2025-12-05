@@ -627,10 +627,18 @@ async def periodic_trial_cleanup(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def trial_chat_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle chat member updates (join/leave) in the trial channel."""
+    if not update.chat_member:
+        logger.warning("trial_chat_member_update called but update.chat_member is None")
+        return
+        
     chat_member = update.chat_member
     chat = chat_member.chat
 
+    logger.debug(f"Chat member update received for chat_id={chat.id}, TRIAL_CHANNEL_ID={TRIAL_CHANNEL_ID}")
+    
     if chat.id != TRIAL_CHANNEL_ID:
+        logger.debug(f"Ignoring chat member update for chat_id={chat.id} (not trial channel)")
         return
 
     old = chat_member.old_chat_member
@@ -821,14 +829,18 @@ async def trial_chat_member_update(update: Update, context: ContextTypes.DEFAULT
 
     # Detect user leaving during trial phase and send feedback form
     if old.status in ("member", "administrator") and new.status in ("left", "kicked"):
+        logger.info(f"User left/kicked detected: old_status={old.status}, new_status={new.status}")
+        
         # Ignore leaves caused by the bot itself (e.g. scheduled trial_end ban/unban)
         try:
             bot_user = await context.bot.get_me()
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Failed to get bot user info: {e}")
             bot_user = None
 
         # If the actor is the bot, don't send feedback (this is likely trial_end cleanup)
         if bot_user and chat_member.from_user and chat_member.from_user.id == bot_user.id:
+            logger.info("Leave was caused by bot itself, skipping feedback message")
             return
 
         user = old.user
@@ -836,6 +848,8 @@ async def trial_chat_member_update(update: Update, context: ContextTypes.DEFAULT
             # Safety check: user should always be present, but handle edge case
             logger.warning("old.user is None in trial_chat_member_update")
             return
+
+        logger.info(f"Processing leave for user_id={user.id}, username={user.username}")
 
         # Try to compute how many trial hours they used and how many were remaining
         remaining_info = ""
@@ -856,19 +870,28 @@ async def trial_chat_member_update(update: Update, context: ContextTypes.DEFAULT
                     f"\n\nYou used about {elapsed_hours_rounded} hours "
                     f"of your free trial and had about {remaining_hours_rounded} hours remaining."
                 )
+                logger.info(f"User {user.id} used {elapsed_hours_rounded} hours, {remaining_hours_rounded} remaining")
+            else:
+                logger.info(f"No active trial found for user {user.id} (may have already been cleared)")
         except Exception as e:
-            logger.warning(f"Failed to compute remaining trial hours for user_id={user.id}: {e}")
+            logger.warning(f"Failed to compute remaining trial hours for user_id={user.id}: {e}", exc_info=True)
 
-        await context.bot.send_message(
-            chat_id=user.id,
-            text=(
-                "We noticed you left the trial channel before your trial finished.\n"
-                f"{remaining_info}\n\n"
-                "We hope you had a great time testing our signals 🙌\n"
-                "It would mean a lot if you could share quick feedback here:\n"
-                f"{FEEDBACK_FORM_URL}"
-            ),
-        )
+        # Send message to user about leaving
+        try:
+            await context.bot.send_message(
+                chat_id=user.id,
+                text=(
+                    "We noticed you left the trial channel before your trial finished.\n"
+                    f"{remaining_info}\n\n"
+                    "We hope you had a great time testing our signals 🙌\n"
+                    "It would mean a lot if you could share quick feedback here:\n"
+                    f"{FEEDBACK_FORM_URL}"
+                ),
+            )
+            logger.info(f"Successfully sent leave message to user {user.id}")
+        except Exception as e:
+            logger.error(f"Failed to send leave message to user_id={user.id}: {e}", exc_info=True)
+            # Continue with marking trial as used even if message failed
 
         # Treat this as a consumed trial as well
         try:
@@ -878,11 +901,16 @@ async def trial_chat_member_update(update: Update, context: ContextTypes.DEFAULT
                     "left_early_at": _now_utc().isoformat(),
                 },
             )
+            logger.info(f"Marked trial as used for user {user.id} (left early)")
         except Exception as e:
-            logger.warning(f"Failed to mark trial used on early leave for user_id={user.id}: {e}")
+            logger.warning(f"Failed to mark trial used on early leave for user_id={user.id}: {e}", exc_info=True)
 
         # Clear active trial tracking since they left
-        clear_active_trial(user.id)
+        try:
+            clear_active_trial(user.id)
+            logger.info(f"Cleared active trial for user {user.id}")
+        except Exception as e:
+            logger.warning(f"Failed to clear active trial for user_id={user.id}: {e}", exc_info=True)
 
 
 async def trial_reminder_3day_1(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -972,8 +1000,15 @@ def main() -> None:
     """
     # BOT_TOKEN is already validated at module level
     application = ApplicationBuilder().token(BOT_TOKEN).build()
+    
+    # IMPORTANT: For ChatMemberHandler to work, ensure:
+    # 1. Bot is an admin in the trial channel/group
+    # 2. Bot has necessary permissions (at minimum: view members)
+    # 3. Bot is not in "Group Privacy" mode (BotFather -> Bot Settings -> Group Privacy -> OFF)
+    #    OR the bot must be added as admin to receive member updates
+    logger.info("Application built. ChatMemberHandler requires bot to be admin in trial channel.")
 
-    # Restore trial end jobs after a restart based on active_trials.json
+    # Restore trial end jobs and reminder jobs after a restart based on active_trials.json
     try:
         now = _now_utc()
         active_trials = get_all_active_trials()
@@ -995,31 +1030,70 @@ def main() -> None:
             join_time_str = info.get("join_time")
             total_hours = info.get("total_hours")
 
-            end_dt = None
-            try:
-                if trial_end_at_str:
-                    end_dt = _parse_iso_to_utc(trial_end_at_str)
-                elif join_time_str and total_hours is not None:
-                    join_dt = _parse_iso_to_utc(join_time_str)
-                    end_dt = join_dt + timedelta(hours=float(total_hours))
-            except Exception:
-                end_dt = None
-
-            if not end_dt:
+            if not join_time_str or total_hours is None:
                 continue
 
-            # If already past end time, schedule immediate cleanup
-            delay = end_dt - now
-            if delay.total_seconds() < 0:
-                delay = timedelta(seconds=0)
-
-            jq.run_once(
-                trial_end,
-                when=delay,
-                data={"user_id": user_id},
-            )
+            try:
+                join_dt = _parse_iso_to_utc(join_time_str)
+                total_hours_float = float(total_hours)
+                
+                # Calculate end time
+                if trial_end_at_str:
+                    end_dt = _parse_iso_to_utc(trial_end_at_str)
+                else:
+                    end_dt = join_dt + timedelta(hours=total_hours_float)
+                
+                # Determine trial type (3-day or 5-day) based on total_hours
+                is_5day = (total_hours_float == TRIAL_HOURS_5_DAY)
+                
+                # Restore reminder jobs based on trial type
+                if is_5day:
+                    # 5-day trial: reminders at +24h, +72h, +96h, end at +120h
+                    reminder_times = [
+                        (24, trial_reminder_5day_1),
+                        (72, trial_reminder_5day_3),
+                        (96, trial_reminder_5day_4),
+                        (120, trial_end),
+                    ]
+                else:
+                    # 3-day trial: reminders at +24h, +48h, end at +72h
+                    reminder_times = [
+                        (24, trial_reminder_3day_1),
+                        (48, trial_reminder_3day_2),
+                        (72, trial_end),
+                    ]
+                
+                # Schedule each reminder job if it hasn't passed yet
+                for hours_offset, job_func in reminder_times:
+                    reminder_time = join_dt + timedelta(hours=hours_offset)
+                    delay = reminder_time - now
+                    
+                    # Only schedule if the reminder time hasn't passed yet
+                    if delay.total_seconds() > 0:
+                        jq.run_once(
+                            job_func,
+                            when=delay,
+                            data={"user_id": user_id},
+                        )
+                        logger.info(f"Restored {job_func.__name__} job for user {user_id}, scheduled in {delay}")
+                    else:
+                        logger.debug(f"Skipped {job_func.__name__} job for user {user_id} (already passed)")
+                
+                # If trial end has passed, schedule immediate cleanup
+                if end_dt <= now:
+                    jq.run_once(
+                        trial_end,
+                        when=timedelta(seconds=0),
+                        data={"user_id": user_id},
+                    )
+                    logger.info(f"Scheduled immediate trial_end cleanup for user {user_id} (trial expired)")
+                    
+            except Exception as e:
+                logger.warning(f"Error restoring jobs for user {user_id}: {e}", exc_info=True)
+                continue
+                
     except Exception as e:
-        logger.warning(f"Failed to restore active trial jobs: {e}")
+        logger.warning(f"Failed to restore active trial jobs: {e}", exc_info=True)
     
     # Add periodic cleanup job as fallback (runs every hour)
     # This ensures trials end even if scheduled jobs fail
