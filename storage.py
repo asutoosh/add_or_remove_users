@@ -45,12 +45,36 @@ def _load_json(path: str, default: Any) -> Any:
 
 def _save_json(path: str, data: Any) -> None:
     tmp_path = f"{path}.tmp"
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-    # Set restrictive permissions (owner read/write only) for security
-    os.chmod(tmp_path, stat.S_IRUSR | stat.S_IWUSR)
-    os.replace(tmp_path, path)
-    os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        
+        # Set restrictive permissions (owner read/write only) for security
+        # Only on Unix-like systems - skip on Windows where chmod behaves differently
+        if os.name != 'nt':  # 'nt' is Windows
+            try:
+                os.chmod(tmp_path, stat.S_IRUSR | stat.S_IWUSR)
+            except Exception as e:
+                logger.warning(f"Could not set permissions on {tmp_path}: {e}")
+        
+        os.replace(tmp_path, path)
+        
+        if os.name != 'nt':
+            try:
+                os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+            except Exception as e:
+                logger.warning(f"Could not set permissions on {path}: {e}")
+        
+        logger.debug(f"Successfully saved JSON to {path}")
+    except Exception as e:
+        logger.error(f"Failed to save JSON to {path}: {e}")
+        # Clean up temp file if it exists
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+        raise  # Re-raise to let caller know save failed
 
 
 def get_pending_verification(tg_id: int) -> Optional[Dict[str, Any]]:
@@ -104,18 +128,28 @@ def has_used_trial(tg_id: int) -> bool:
     """
     with _lock:
         data = _load_json(USED_TRIALS_FILE, {})
-        return str(tg_id) in data
+        result = str(tg_id) in data
+        logger.debug(f"has_used_trial({tg_id}): {result}, file has {len(data)} entries")
+        return result
 
 
 def mark_trial_used(tg_id: int, info: Dict[str, Any]) -> None:
     """
     Mark a user as having used their free trial.
-    This can be called when the trial period ends.
+    This can be called when the trial period ends or user leaves early.
     """
     with _lock:
+        logger.info(f"mark_trial_used: Marking user {tg_id} as used, info={info}")
         data = _load_json(USED_TRIALS_FILE, {})
         data[str(tg_id)] = info
         _save_json(USED_TRIALS_FILE, data)
+        
+        # Verify the save worked
+        verify_data = _load_json(USED_TRIALS_FILE, {})
+        if str(tg_id) in verify_data:
+            logger.info(f"mark_trial_used: Successfully saved trial for user {tg_id}")
+        else:
+            logger.error(f"mark_trial_used: FAILED to save trial for user {tg_id} - data not found after save!")
 
 
 def get_used_trial_info(tg_id: int) -> Optional[Dict[str, Any]]:
@@ -156,6 +190,7 @@ def set_active_trial(tg_id: int, info: Dict[str, Any]) -> None:
         data = _load_json(ACTIVE_TRIALS_FILE, {})
         data[str(tg_id)] = info
         _save_json(ACTIVE_TRIALS_FILE, data)
+        logger.info(f"set_active_trial: Set active trial for user {tg_id}, total_hours={info.get('total_hours')}")
 
 
 def clear_active_trial(tg_id: int) -> None:
@@ -165,8 +200,12 @@ def clear_active_trial(tg_id: int) -> None:
     """
     with _lock:
         data = _load_json(ACTIVE_TRIALS_FILE, {})
-        data.pop(str(tg_id), None)
-        _save_json(ACTIVE_TRIALS_FILE, data)
+        if str(tg_id) in data:
+            data.pop(str(tg_id), None)
+            _save_json(ACTIVE_TRIALS_FILE, data)
+            logger.info(f"clear_active_trial: Cleared active trial for user {tg_id}")
+        else:
+            logger.debug(f"clear_active_trial: No active trial found for user {tg_id} to clear")
 
 
 def get_invite_info(tg_id: int) -> Optional[Dict[str, Any]]:

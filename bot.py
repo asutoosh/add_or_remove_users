@@ -131,6 +131,12 @@ logger.info(f"BASE_URL: {BASE_URL}")
 logger.info(f"TRIAL_CHANNEL_ID: {TRIAL_CHANNEL_ID}")
 logger.info(f"BOT_TOKEN: {'*' * 10 if BOT_TOKEN else 'NOT SET'}")
 
+# Validate TRIAL_CHANNEL_ID format
+if TRIAL_CHANNEL_ID == 0:
+    logger.error("⚠️ TRIAL_CHANNEL_ID is 0! Set it in your .env file. Join/leave detection will NOT work!")
+elif TRIAL_CHANNEL_ID > 0:
+    logger.warning(f"⚠️ TRIAL_CHANNEL_ID ({TRIAL_CHANNEL_ID}) is positive. Channels/supergroups usually have NEGATIVE IDs like -1001234567890")
+
 
 # Track last time check to detect clock manipulation
 _last_time_check: Optional[datetime] = None
@@ -518,6 +524,142 @@ async def support_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await update.message.reply_text(support_text, parse_mode="Markdown")
 
 
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Admin command to check bot status and debug info.
+    Shows active trials, used trials count, scheduled jobs, etc.
+    """
+    user = update.effective_user
+    if not user or not update.message:
+        return
+    
+    # Only allow bot owner/admin to use this (you can customize this check)
+    # For now, show to everyone but you may want to restrict it
+    
+    try:
+        from storage import get_all_active_trials, USED_TRIALS_FILE, ACTIVE_TRIALS_FILE
+        import os
+        
+        active_trials = get_all_active_trials()
+        
+        # Count used trials
+        used_trials_count = 0
+        try:
+            import json
+            if os.path.exists(USED_TRIALS_FILE):
+                with open(USED_TRIALS_FILE, 'r') as f:
+                    used_data = json.load(f)
+                    used_trials_count = len(used_data)
+        except Exception:
+            used_trials_count = -1  # Error reading
+        
+        # Get job queue info
+        jobs = context.job_queue.jobs() if context.job_queue else []
+        job_count = len(jobs)
+        
+        # List pending jobs with their scheduled times
+        job_list = []
+        for job in jobs[:10]:  # Show max 10 jobs
+            if job.data and "user_id" in job.data:
+                next_run = job.next_t.strftime("%Y-%m-%d %H:%M:%S UTC") if job.next_t else "unknown"
+                job_name = job.name or job.callback.__name__ if job.callback else "unknown"
+                job_list.append(f"  • User {job.data['user_id']}: {job_name} at {next_run}")
+        
+        # Check if files exist and are writable
+        files_status = []
+        for fname, fpath in [("active_trials.json", ACTIVE_TRIALS_FILE), ("used_trials.json", USED_TRIALS_FILE)]:
+            exists = os.path.exists(fpath)
+            writable = os.access(os.path.dirname(fpath) or '.', os.W_OK)
+            files_status.append(f"  • {fname}: exists={exists}, dir_writable={writable}")
+        
+        status_text = (
+            f"📊 *Bot Status*\n\n"
+            f"*Active Trials:* {len(active_trials)}\n"
+            f"*Used Trials:* {used_trials_count}\n"
+            f"*Scheduled Jobs:* {job_count}\n"
+            f"*Trial Channel ID:* `{TRIAL_CHANNEL_ID}`\n\n"
+            f"*File Status:*\n" + "\n".join(files_status) + "\n\n"
+        )
+        
+        if active_trials:
+            status_text += "*Active Trial Users:*\n"
+            for tg_id, info in list(active_trials.items())[:5]:  # Show max 5
+                end_at = info.get("trial_end_at", "unknown")
+                hours = info.get("total_hours", "?")
+                status_text += f"  • User {tg_id}: {hours}h trial, ends {end_at[:19] if len(end_at) > 19 else end_at}\n"
+            if len(active_trials) > 5:
+                status_text += f"  ... and {len(active_trials) - 5} more\n"
+        
+        if job_list:
+            status_text += "\n*Scheduled Jobs:*\n" + "\n".join(job_list)
+            if job_count > 10:
+                status_text += f"\n  ... and {job_count - 10} more"
+        
+        await update.message.reply_text(status_text, parse_mode="Markdown")
+        
+    except Exception as e:
+        logger.error(f"Error in status_command: {e}", exc_info=True)
+        await update.message.reply_text(f"Error getting status: {e}")
+
+
+async def test_leave_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Admin command to simulate a user leaving (for testing).
+    Usage: /test_leave <user_id>
+    """
+    user = update.effective_user
+    if not user or not update.message:
+        return
+    
+    args = context.args
+    if not args:
+        await update.message.reply_text("Usage: /test_leave <user_id>")
+        return
+    
+    try:
+        test_user_id = int(args[0])
+    except ValueError:
+        await update.message.reply_text("Invalid user ID. Must be a number.")
+        return
+    
+    # Get active trial info
+    active = get_active_trial(test_user_id)
+    if not active:
+        await update.message.reply_text(f"No active trial found for user {test_user_id}")
+        return
+    
+    # Simulate the leave process
+    try:
+        leave_info = {
+            "left_early_at": _now_utc().isoformat(),
+            "reason": "test_leave_command",
+            "join_time": active.get("join_time"),
+            "total_hours": active.get("total_hours")
+        }
+        
+        mark_trial_used(test_user_id, leave_info)
+        clear_active_trial(test_user_id)
+        
+        await update.message.reply_text(
+            f"✅ Simulated leave for user {test_user_id}\n"
+            f"• Trial marked as used\n"
+            f"• Active trial cleared"
+        )
+        
+        # Try to send message to user
+        try:
+            await context.bot.send_message(
+                chat_id=test_user_id,
+                text="🧪 Test: Your trial has been marked as ended (admin test command)."
+            )
+            await update.message.reply_text("✅ Message sent to user")
+        except Exception as e:
+            await update.message.reply_text(f"⚠️ Could not message user: {e}")
+            
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
+
+
 async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.effective_user:
         return
@@ -771,9 +913,11 @@ async def trial_chat_member_update(update: Update, context: ContextTypes.DEFAULT
     if old.status in ("left", "kicked") and new.status in ("member", "administrator"):
         user = new.user
         if not user:
-            # Safety check: user should always be present, but handle edge case
-            logger.warning("new.user is None in trial_chat_member_update")
+            logger.warning("new.user is None in trial_chat_member_update (join)")
             return
+        
+        logger.info(f"=== USER JOIN DETECTED ===")
+        logger.info(f"User {user.id} ({user.username}) joined trial channel")
         now = _now_utc()
 
         # Check if user has already used a trial (prevent rejoin extension exploit)
@@ -911,76 +1055,92 @@ async def trial_chat_member_update(update: Update, context: ContextTypes.DEFAULT
         )
 
         jq = context.job_queue
+        logger.info(f"Scheduling reminder jobs for user {user.id} ({trial_days}-day trial)")
 
         if trial_days == 3:
             jq.run_once(
                 trial_reminder_3day_1,
                 when=timedelta(hours=24),
                 data={"user_id": user.id},
+                name=f"reminder_24h_{user.id}",
             )
             jq.run_once(
                 trial_reminder_3day_2,
                 when=timedelta(hours=48),
                 data={"user_id": user.id},
+                name=f"reminder_48h_{user.id}",
             )
             jq.run_once(
                 trial_end,
                 when=timedelta(hours=72),
                 data={"user_id": user.id},
+                name=f"trial_end_{user.id}",
             )
+            logger.info(f"Scheduled 3-day trial jobs: 24h, 48h reminders + 72h end for user {user.id}")
         else:
             jq.run_once(
                 trial_reminder_5day_1,
                 when=timedelta(hours=24),
                 data={"user_id": user.id},
+                name=f"reminder_24h_{user.id}",
             )
             jq.run_once(
                 trial_reminder_5day_3,
                 when=timedelta(hours=72),
                 data={"user_id": user.id},
+                name=f"reminder_72h_{user.id}",
             )
             jq.run_once(
                 trial_reminder_5day_4,
                 when=timedelta(hours=96),
                 data={"user_id": user.id},
+                name=f"reminder_96h_{user.id}",
             )
             jq.run_once(
                 trial_end,
                 when=timedelta(hours=120),
                 data={"user_id": user.id},
+                name=f"trial_end_{user.id}",
             )
+            logger.info(f"Scheduled 5-day trial jobs: 24h, 72h, 96h reminders + 120h end for user {user.id}")
 
     # Detect user leaving during trial phase and send feedback form
     if old.status in ("member", "administrator") and new.status in ("left", "kicked"):
-        logger.info(f"User left/kicked detected: old_status={old.status}, new_status={new.status}")
+        logger.info(f"=== USER LEAVE DETECTED ===")
+        logger.info(f"User left/kicked: old_status={old.status}, new_status={new.status}")
+        
+        user = old.user
+        if not user:
+            logger.warning("old.user is None in trial_chat_member_update (leave)")
+            return
+        
+        logger.info(f"Leave event for user_id={user.id}, username={user.username}")
+        logger.info(f"chat_member.from_user: {chat_member.from_user.id if chat_member.from_user else 'None'}")
         
         # Ignore leaves caused by the bot itself (e.g. scheduled trial_end ban/unban)
         try:
             bot_user = await context.bot.get_me()
+            logger.debug(f"Bot user id: {bot_user.id if bot_user else 'None'}")
         except Exception as e:
             logger.warning(f"Failed to get bot user info: {e}")
             bot_user = None
 
         # If the actor is the bot, don't send feedback (this is likely trial_end cleanup)
         if bot_user and chat_member.from_user and chat_member.from_user.id == bot_user.id:
-            logger.info("Leave was caused by bot itself, skipping feedback message")
+            logger.info("Leave was caused by bot itself (trial_end cleanup), skipping feedback message")
             return
+        
+        logger.info(f"Processing voluntary leave for user_id={user.id}")
 
-        user = old.user
-        if not user:
-            # Safety check: user should always be present, but handle edge case
-            logger.warning("old.user is None in trial_chat_member_update")
-            return
-
-        logger.info(f"Processing leave for user_id={user.id}, username={user.username}")
-
+        # Get trial data BEFORE clearing it
+        active = get_active_trial(user.id)
+        logger.info(f"Active trial data for user {user.id}: {active}")
+        
         # Try to compute how many trial hours they used and how many were remaining
         usage_info = ""
         total_days = 3  # Default
+        total_hours_used = 0
         try:
-            active = get_active_trial(user.id)
-            logger.debug(f"Active trial data for user {user.id}: {active}")
-            
             if active and "join_time" in active and "total_hours" in active:
                 join_time = _parse_iso_to_utc(active["join_time"])
                 total_hours = float(active["total_hours"])
@@ -988,6 +1148,7 @@ async def trial_chat_member_update(update: Update, context: ContextTypes.DEFAULT
                 now = _now_utc()
                 elapsed_hours = (now - join_time).total_seconds() / 3600.0
                 remaining_hours = max(0.0, total_hours - elapsed_hours)
+                total_hours_used = total_hours
 
                 # Round for nicer display
                 elapsed_hours_rounded = round(elapsed_hours, 1)
@@ -1001,13 +1162,34 @@ async def trial_chat_member_update(update: Update, context: ContextTypes.DEFAULT
                 logger.info(f"User {user.id} consumed {elapsed_hours_rounded}/{total_hours} hours, {remaining_hours_rounded} remaining")
             else:
                 logger.warning(f"No active trial found for user {user.id} (may have already been cleared or never started)")
-                # Still send a generic message
                 usage_info = "\n\nYour trial data was not found - it may have already expired."
         except Exception as e:
             logger.error(f"Failed to compute remaining trial hours for user_id={user.id}: {e}", exc_info=True)
-            usage_info = ""  # Continue without usage info
+            usage_info = ""
 
-        # Send message to user about leaving
+        # FIRST: Mark trial as used BEFORE clearing active trial (important order!)
+        try:
+            leave_info = {
+                "left_early_at": _now_utc().isoformat(),
+                "reason": "user_left_channel"
+            }
+            if active:
+                leave_info["join_time"] = active.get("join_time")
+                leave_info["total_hours"] = active.get("total_hours")
+            
+            mark_trial_used(user.id, leave_info)
+            logger.info(f"✅ Successfully marked trial as used for user {user.id} (left early)")
+        except Exception as e:
+            logger.error(f"❌ FAILED to mark trial used on early leave for user_id={user.id}: {e}", exc_info=True)
+
+        # SECOND: Clear active trial tracking since they left
+        try:
+            clear_active_trial(user.id)
+            logger.info(f"Cleared active trial for user {user.id}")
+        except Exception as e:
+            logger.warning(f"Failed to clear active trial for user_id={user.id}: {e}", exc_info=True)
+
+        # THIRD: Send message to user about leaving
         try:
             leave_message = (
                 f"👋 You have left the trial channel.\n"
@@ -1023,128 +1205,142 @@ async def trial_chat_member_update(update: Update, context: ContextTypes.DEFAULT
                 chat_id=user.id,
                 text=leave_message,
             )
-            logger.info(f"Successfully sent leave message to user {user.id}")
+            logger.info(f"✅ Successfully sent leave message to user {user.id}")
         except Exception as e:
-            logger.error(f"Failed to send leave message to user_id={user.id}: {e}", exc_info=True)
-            # Continue with marking trial as used even if message failed
-
-        # Treat this as a consumed trial as well
-        try:
-            # Store more detailed info about the early leave
-            active = get_active_trial(user.id)
-            leave_info = {
-                "left_early_at": _now_utc().isoformat(),
-                "reason": "user_left_channel"
-            }
-            if active:
-                leave_info["join_time"] = active.get("join_time")
-                leave_info["total_hours"] = active.get("total_hours")
-            
-            mark_trial_used(user.id, leave_info)
-            logger.info(f"Marked trial as used for user {user.id} (left early)")
-        except Exception as e:
-            logger.warning(f"Failed to mark trial used on early leave for user_id={user.id}: {e}", exc_info=True)
-
-        # Clear active trial tracking since they left
-        try:
-            clear_active_trial(user.id)
-            logger.info(f"Cleared active trial for user {user.id}")
-        except Exception as e:
-            logger.warning(f"Failed to clear active trial for user_id={user.id}: {e}", exc_info=True)
+            logger.error(f"❌ Failed to send leave message to user_id={user.id}: {e}", exc_info=True)
+        
+        logger.info(f"=== LEAVE PROCESSING COMPLETE for user {user.id} ===")
 
 
-async def _send_trial_reminder(context: ContextTypes.DEFAULT_TYPE, user_id: int, message: str) -> bool:
+async def _send_trial_reminder(context: ContextTypes.DEFAULT_TYPE, user_id: int, message: str, reminder_name: str = "reminder") -> bool:
     """
     Helper function to send trial reminders with proper error handling.
     Returns True if message was sent successfully, False otherwise.
     """
+    logger.info(f"=== {reminder_name} triggered for user {user_id} ===")
+    
     # Check if user still has an active trial before sending reminder
     active_trial = get_active_trial(user_id)
     if not active_trial:
-        logger.info(f"Skipping reminder for user {user_id} - no active trial (user may have left)")
+        logger.info(f"Skipping {reminder_name} for user {user_id} - no active trial (user may have left early)")
         return False
+    
+    logger.debug(f"Active trial data for {reminder_name}: {active_trial}")
     
     # Verify trial hasn't expired yet
     try:
         trial_end_str = active_trial.get("trial_end_at")
         if trial_end_str:
             trial_end_at = _parse_iso_to_utc(trial_end_str)
-            if _now_utc() >= trial_end_at:
-                logger.info(f"Skipping reminder for user {user_id} - trial already expired")
+            now = _now_utc()
+            if now >= trial_end_at:
+                logger.info(f"Skipping {reminder_name} for user {user_id} - trial already expired at {trial_end_at}")
                 return False
+            else:
+                remaining = (trial_end_at - now).total_seconds() / 3600
+                logger.debug(f"Trial still active, {round(remaining, 1)} hours remaining")
     except Exception as e:
         logger.warning(f"Error checking trial expiry for user {user_id}: {e}")
     
     try:
         await context.bot.send_message(chat_id=user_id, text=message)
-        logger.info(f"Successfully sent trial reminder to user {user_id}")
+        logger.info(f"✅ Successfully sent {reminder_name} to user {user_id}")
         return True
     except Exception as e:
-        logger.error(f"Failed to send trial reminder to user {user_id}: {e}")
+        logger.error(f"❌ Failed to send {reminder_name} to user {user_id}: {e}", exc_info=True)
         return False
 
 
 async def trial_reminder_3day_1(context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = context.job.data["user_id"]
+    logger.info(f"trial_reminder_3day_1 job executing for user {user_id}")
     await _send_trial_reminder(
         context, user_id,
         "⏱ 1 day (24 hours) has passed, 2 days remaining in your trial.\n\n"
-        f"💬 Enjoying the signals? Upgrade anytime by contacting {SUPPORT_CONTACT}"
+        f"💬 Enjoying the signals? Upgrade anytime by contacting {SUPPORT_CONTACT}",
+        reminder_name="24h_reminder_3day"
     )
 
 
 async def trial_reminder_3day_2(context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = context.job.data["user_id"]
+    logger.info(f"trial_reminder_3day_2 job executing for user {user_id}")
     await _send_trial_reminder(
         context, user_id,
         "⏱ 2 days (48 hours) have passed. Only the last 24 hours left in your trial!\n\n"
-        f"⚡ Don't miss out! Contact {SUPPORT_CONTACT} to upgrade and keep receiving signals."
+        f"⚡ Don't miss out! Contact {SUPPORT_CONTACT} to upgrade and keep receiving signals.",
+        reminder_name="48h_reminder_3day"
     )
 
 
 async def trial_reminder_5day_1(context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = context.job.data["user_id"]
+    logger.info(f"trial_reminder_5day_1 job executing for user {user_id}")
     await _send_trial_reminder(
         context, user_id,
         "⏱ 1 day (24 hours) has passed, 4 days remaining in your 5-day trial.\n\n"
-        f"💬 Enjoying the signals? Upgrade anytime by contacting {SUPPORT_CONTACT}"
+        f"💬 Enjoying the signals? Upgrade anytime by contacting {SUPPORT_CONTACT}",
+        reminder_name="24h_reminder_5day"
     )
 
 
 async def trial_reminder_5day_3(context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = context.job.data["user_id"]
+    logger.info(f"trial_reminder_5day_3 job executing for user {user_id}")
     await _send_trial_reminder(
         context, user_id,
         "⏱ 3 days (72 hours) have passed, 2 days remaining in your 5-day trial.\n\n"
-        f"💬 Questions about upgrading? Contact {SUPPORT_CONTACT}"
+        f"💬 Questions about upgrading? Contact {SUPPORT_CONTACT}",
+        reminder_name="72h_reminder_5day"
     )
 
 
 async def trial_reminder_5day_4(context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = context.job.data["user_id"]
+    logger.info(f"trial_reminder_5day_4 job executing for user {user_id}")
     await _send_trial_reminder(
         context, user_id,
         "⏱ 4 days (96 hours) have passed. Only the last 24 hours left in your trial!\n\n"
-        f"⚡ Don't miss out! Contact {SUPPORT_CONTACT} to upgrade and keep receiving signals."
+        f"⚡ Don't miss out! Contact {SUPPORT_CONTACT} to upgrade and keep receiving signals.",
+        reminder_name="96h_reminder_5day"
     )
 
 
 async def trial_end(context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = context.job.data["user_id"]
+    logger.info(f"=== trial_end job executing for user {user_id} ===")
+    
+    # Check if user still has active trial (they might have left early)
+    active_trial = get_active_trial(user_id)
+    if not active_trial:
+        logger.info(f"No active trial for user {user_id} - they may have left early, skipping trial_end")
+        return
+    
+    # Check if already marked as used (avoid duplicate marking)
+    if has_used_trial(user_id):
+        logger.info(f"User {user_id} already marked as used trial, clearing active trial only")
+        clear_active_trial(user_id)
+        return
+    
     # Mark this user as having used their free trial first (JSON is the source of truth)
     try:
         mark_trial_used(
             user_id,
             {
                 "trial_ended_at": _now_utc().isoformat(),
+                "ended_by": "scheduled_job"
             },
         )
+        logger.info(f"✅ Marked trial as used for user {user_id}")
     except Exception as e:
-        # Do not crash job on storage issues; just log if needed
-        logger.warning(f"Failed to mark trial as used for user_id={user_id}: {e}")
+        logger.error(f"❌ Failed to mark trial as used for user_id={user_id}: {e}", exc_info=True)
 
     # Clear active trial tracking on natural trial end
-    clear_active_trial(user_id)
+    try:
+        clear_active_trial(user_id)
+        logger.info(f"Cleared active trial for user {user_id}")
+    except Exception as e:
+        logger.error(f"Failed to clear active trial for user {user_id}: {e}")
 
     # Notify user and remove them from trial channel
     try:
@@ -1152,20 +1348,25 @@ async def trial_end(context: ContextTypes.DEFAULT_TYPE) -> None:
             chat_id=user_id,
             text=(
                 "⛔ Your trial has finished. If you enjoyed the signals, you can upgrade "
-                "to a paid plan to continue."
+                "to a paid plan to continue.\n\n"
+                f"📝 We'd love to hear your feedback:\n{FEEDBACK_FORM_URL}\n\n"
+                f"🎁 For more chances, join our giveaway: {GIVEAWAY_CHANNEL_URL}\n"
+                f"💬 Ready to upgrade? DM {SUPPORT_CONTACT}"
             ),
         )
-    except Exception:
-        # User might have blocked the bot or never opened DM; ignore
-        pass
+        logger.info(f"✅ Sent trial end message to user {user_id}")
+    except Exception as e:
+        logger.warning(f"Could not send trial end message to user {user_id}: {e}")
 
-    # Optionally remove from trial channel
+    # Remove from trial channel
     try:
         await context.bot.ban_chat_member(TRIAL_CHANNEL_ID, user_id)
         await context.bot.unban_chat_member(TRIAL_CHANNEL_ID, user_id)
-    except Exception:
-        # Ignore errors (e.g. if bot is not admin)
-        pass
+        logger.info(f"Removed user {user_id} from trial channel")
+    except Exception as e:
+        logger.warning(f"Could not remove user {user_id} from trial channel: {e}")
+    
+    logger.info(f"=== trial_end complete for user {user_id} ===")
 
 
 def main() -> None:
@@ -1189,6 +1390,9 @@ def main() -> None:
         now = _now_utc()
         active_trials = get_all_active_trials()
         jq = application.job_queue
+        
+        logger.info(f"=== RESTORING JOBS ON STARTUP ===")
+        logger.info(f"Found {len(active_trials)} active trials to restore")
 
         for tg_id_str, info in active_trials.items():
             try:
@@ -1240,6 +1444,7 @@ def main() -> None:
                     ]
                 
                 # Schedule each reminder job if it hasn't passed yet
+                restored_jobs = 0
                 for hours_offset, job_func in reminder_times:
                     reminder_time = join_dt + timedelta(hours=hours_offset)
                     delay = reminder_time - now
@@ -1250,10 +1455,15 @@ def main() -> None:
                             job_func,
                             when=delay,
                             data={"user_id": user_id},
+                            name=f"{job_func.__name__}_{user_id}",
                         )
-                        logger.info(f"Restored {job_func.__name__} job for user {user_id}, scheduled in {delay}")
+                        logger.info(f"Restored {job_func.__name__} for user {user_id}, scheduled in {delay}")
+                        restored_jobs += 1
                     else:
-                        logger.debug(f"Skipped {job_func.__name__} job for user {user_id} (already passed)")
+                        logger.debug(f"Skipped {job_func.__name__} for user {user_id} (already passed)")
+                
+                if restored_jobs > 0:
+                    logger.info(f"Restored {restored_jobs} jobs for user {user_id}")
                 
                 # If trial end has passed, schedule immediate cleanup
                 if end_dt <= now:
@@ -1268,6 +1478,7 @@ def main() -> None:
                 logger.warning(f"Error restoring jobs for user {user_id}: {e}", exc_info=True)
                 continue
                 
+        logger.info(f"=== JOB RESTORATION COMPLETE ===")
     except Exception as e:
         logger.warning(f"Failed to restore active trial jobs: {e}", exc_info=True)
     
@@ -1288,6 +1499,8 @@ def main() -> None:
     application.add_handler(CommandHandler("about", about_command))
     application.add_handler(CommandHandler("support", support_command))
     application.add_handler(CommandHandler("retry", retry_command))
+    application.add_handler(CommandHandler("status", status_command))
+    application.add_handler(CommandHandler("test_leave", test_leave_command))
 
     application.add_handler(
         CallbackQueryHandler(start_trial_callback, pattern="^start_trial$")
@@ -1304,8 +1517,19 @@ def main() -> None:
         ChatMemberHandler(trial_chat_member_update, ChatMemberHandler.CHAT_MEMBER)
     )
 
+    # CRITICAL: Must explicitly request chat_member updates!
+    # By default, Telegram doesn't send chat_member updates unless requested.
+    # See: https://core.telegram.org/bots/api#getupdates
+    allowed_updates = [
+        "message",
+        "edited_message",
+        "callback_query",
+        "chat_member",  # Required for join/leave detection
+    ]
+    logger.info(f"Starting polling with allowed_updates: {allowed_updates}")
+    
     # Handles event loop setup/teardown internally.
-    application.run_polling()
+    application.run_polling(allowed_updates=allowed_updates)
 
 
 if __name__ == "__main__":
