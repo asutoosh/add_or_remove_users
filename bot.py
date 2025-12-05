@@ -113,12 +113,22 @@ if not BOT_TOKEN:
 if TRIAL_CHANNEL_ID == 0:
     logger.warning("TRIAL_CHANNEL_ID is not set (using 0). Set it in your environment.")
 
-# Trial duration constants
-TRIAL_HOURS_3_DAY = 72
-TRIAL_HOURS_5_DAY = 120
+# Trial duration constants (can be overridden via env for testing)
+# Set these to small values (e.g., 5 minutes = 0.083 hours) for testing
+TRIAL_HOURS_3_DAY = _safe_float_env("TRIAL_HOURS_3_DAY", 72.0)
+TRIAL_HOURS_5_DAY = _safe_float_env("TRIAL_HOURS_5_DAY", 120.0)
 TAMPERING_TOLERANCE_SECONDS = 3600  # 1 hour tolerance for trial data validation
 TRIAL_COOLDOWN_DAYS = 30  # Days before user can request another trial
 INVITE_LINK_EXPIRY_HOURS = 5  # Hours before invite link expires
+
+# Reminder timing (in MINUTES for easier testing - set to 3, 5, 7 for quick tests)
+# For production: 1440 (24h), 2880 (48h), 4320 (72h), 5760 (96h), 7200 (120h)
+REMINDER_1_MINUTES = _safe_float_env("REMINDER_1_MINUTES", 1440.0)  # 24 hours default
+REMINDER_2_MINUTES = _safe_float_env("REMINDER_2_MINUTES", 2880.0)  # 48 hours default
+TRIAL_END_3DAY_MINUTES = _safe_float_env("TRIAL_END_3DAY_MINUTES", 4320.0)  # 72 hours default
+REMINDER_3_MINUTES = _safe_float_env("REMINDER_3_MINUTES", 4320.0)  # 72 hours (5-day trial)
+REMINDER_4_MINUTES = _safe_float_env("REMINDER_4_MINUTES", 5760.0)  # 96 hours (5-day trial)
+TRIAL_END_5DAY_MINUTES = _safe_float_env("TRIAL_END_5DAY_MINUTES", 7200.0)  # 120 hours default
 
 # Configurable support/giveaway links (fallback to defaults if not set)
 GIVEAWAY_CHANNEL_URL = os.environ.get("GIVEAWAY_CHANNEL_URL", "https://t.me/Freya_Trades")
@@ -130,6 +140,15 @@ logger.info("Bot starting...")
 logger.info(f"BASE_URL: {BASE_URL}")
 logger.info(f"TRIAL_CHANNEL_ID: {TRIAL_CHANNEL_ID}")
 logger.info(f"BOT_TOKEN: {'*' * 10 if BOT_TOKEN else 'NOT SET'}")
+logger.info(f"=== TIMING CONFIGURATION ===")
+logger.info(f"TRIAL_HOURS_3_DAY: {TRIAL_HOURS_3_DAY} hours")
+logger.info(f"TRIAL_HOURS_5_DAY: {TRIAL_HOURS_5_DAY} hours")
+logger.info(f"REMINDER_1_MINUTES: {REMINDER_1_MINUTES} min ({REMINDER_1_MINUTES/60:.1f} hours)")
+logger.info(f"REMINDER_2_MINUTES: {REMINDER_2_MINUTES} min ({REMINDER_2_MINUTES/60:.1f} hours)")
+logger.info(f"TRIAL_END_3DAY_MINUTES: {TRIAL_END_3DAY_MINUTES} min ({TRIAL_END_3DAY_MINUTES/60:.1f} hours)")
+logger.info(f"REMINDER_3_MINUTES: {REMINDER_3_MINUTES} min ({REMINDER_3_MINUTES/60:.1f} hours)")
+logger.info(f"REMINDER_4_MINUTES: {REMINDER_4_MINUTES} min ({REMINDER_4_MINUTES/60:.1f} hours)")
+logger.info(f"TRIAL_END_5DAY_MINUTES: {TRIAL_END_5DAY_MINUTES} min ({TRIAL_END_5DAY_MINUTES/60:.1f} hours)")
 
 # Validate TRIAL_CHANNEL_ID format
 if TRIAL_CHANNEL_ID == 0:
@@ -660,6 +679,49 @@ async def test_leave_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text(f"❌ Error: {e}")
 
 
+async def text_during_phone_verification_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Handle text messages when user is supposed to share phone number via button.
+    Users sometimes type their phone number instead of clicking the share button.
+    """
+    if not update.message or not update.effective_user:
+        return
+    
+    user = update.effective_user
+    message_text = update.message.text or ""
+    
+    # Check if user is in the phone verification stage
+    # (has completed step1 but hasn't verified phone yet)
+    data = get_pending_verification(user.id)
+    
+    if data and data.get("step1_ok") and data.get("status") != "verified":
+        # User is in phone verification stage but sent text instead of clicking button
+        logger.info(f"User {user.id} sent text '{message_text[:50]}...' during phone verification stage")
+        
+        # Check if it looks like they typed a phone number
+        import re
+        looks_like_phone = bool(re.search(r'[\d\+\-\(\)\s]{7,}', message_text))
+        
+        if looks_like_phone:
+            await update.message.reply_text(
+                "⚠️ Please don't type your phone number!\n\n"
+                "For security, we need you to use Telegram's official phone sharing button.\n\n"
+                "👇 Click the **'📱 Share phone number'** button below to continue.",
+                parse_mode="Markdown"
+            )
+        else:
+            await update.message.reply_text(
+                "⚠️ Please use the button to share your phone number.\n\n"
+                "👇 Click the **'📱 Share phone number'** button below to continue verification.\n\n"
+                "If you don't see the button, type /retry to show it again.",
+                parse_mode="Markdown"
+            )
+        return
+    
+    # If not in phone verification stage, ignore (let other handlers process)
+    # This allows normal /commands to work
+
+
 async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.effective_user:
         return
@@ -1058,51 +1120,53 @@ async def trial_chat_member_update(update: Update, context: ContextTypes.DEFAULT
         logger.info(f"Scheduling reminder jobs for user {user.id} ({trial_days}-day trial)")
 
         if trial_days == 3:
+            # Use configurable reminder times (in minutes)
             jq.run_once(
                 trial_reminder_3day_1,
-                when=timedelta(hours=24),
+                when=timedelta(minutes=REMINDER_1_MINUTES),
                 data={"user_id": user.id},
-                name=f"reminder_24h_{user.id}",
+                name=f"reminder_1_{user.id}",
             )
             jq.run_once(
                 trial_reminder_3day_2,
-                when=timedelta(hours=48),
+                when=timedelta(minutes=REMINDER_2_MINUTES),
                 data={"user_id": user.id},
-                name=f"reminder_48h_{user.id}",
+                name=f"reminder_2_{user.id}",
             )
             jq.run_once(
                 trial_end,
-                when=timedelta(hours=72),
+                when=timedelta(minutes=TRIAL_END_3DAY_MINUTES),
                 data={"user_id": user.id},
                 name=f"trial_end_{user.id}",
             )
-            logger.info(f"Scheduled 3-day trial jobs: 24h, 48h reminders + 72h end for user {user.id}")
+            logger.info(f"Scheduled 3-day trial jobs for user {user.id}: reminder_1 at {REMINDER_1_MINUTES}min, reminder_2 at {REMINDER_2_MINUTES}min, end at {TRIAL_END_3DAY_MINUTES}min")
         else:
+            # Use configurable reminder times (in minutes)
             jq.run_once(
                 trial_reminder_5day_1,
-                when=timedelta(hours=24),
+                when=timedelta(minutes=REMINDER_1_MINUTES),
                 data={"user_id": user.id},
-                name=f"reminder_24h_{user.id}",
+                name=f"reminder_1_{user.id}",
             )
             jq.run_once(
                 trial_reminder_5day_3,
-                when=timedelta(hours=72),
+                when=timedelta(minutes=REMINDER_3_MINUTES),
                 data={"user_id": user.id},
-                name=f"reminder_72h_{user.id}",
+                name=f"reminder_3_{user.id}",
             )
             jq.run_once(
                 trial_reminder_5day_4,
-                when=timedelta(hours=96),
+                when=timedelta(minutes=REMINDER_4_MINUTES),
                 data={"user_id": user.id},
-                name=f"reminder_96h_{user.id}",
+                name=f"reminder_4_{user.id}",
             )
             jq.run_once(
                 trial_end,
-                when=timedelta(hours=120),
+                when=timedelta(minutes=TRIAL_END_5DAY_MINUTES),
                 data={"user_id": user.id},
                 name=f"trial_end_{user.id}",
             )
-            logger.info(f"Scheduled 5-day trial jobs: 24h, 72h, 96h reminders + 120h end for user {user.id}")
+            logger.info(f"Scheduled 5-day trial jobs for user {user.id}: reminder_1 at {REMINDER_1_MINUTES}min, reminder_3 at {REMINDER_3_MINUTES}min, reminder_4 at {REMINDER_4_MINUTES}min, end at {TRIAL_END_5DAY_MINUTES}min")
 
     # Detect user leaving during trial phase and send feedback form
     if old.status in ("member", "administrator") and new.status in ("left", "kicked"):
@@ -1426,27 +1490,27 @@ def main() -> None:
                 # Determine trial type (3-day or 5-day) based on total_hours
                 is_5day = (total_hours_float == TRIAL_HOURS_5_DAY)
                 
-                # Restore reminder jobs based on trial type
+                # Restore reminder jobs based on trial type (use configurable minutes)
                 if is_5day:
-                    # 5-day trial: reminders at +24h, +72h, +96h, end at +120h
-                    reminder_times = [
-                        (24, trial_reminder_5day_1),
-                        (72, trial_reminder_5day_3),
-                        (96, trial_reminder_5day_4),
-                        (120, trial_end),
+                    # 5-day trial: reminders at configured times
+                    reminder_times_minutes = [
+                        (REMINDER_1_MINUTES, trial_reminder_5day_1),
+                        (REMINDER_3_MINUTES, trial_reminder_5day_3),
+                        (REMINDER_4_MINUTES, trial_reminder_5day_4),
+                        (TRIAL_END_5DAY_MINUTES, trial_end),
                     ]
                 else:
-                    # 3-day trial: reminders at +24h, +48h, end at +72h
-                    reminder_times = [
-                        (24, trial_reminder_3day_1),
-                        (48, trial_reminder_3day_2),
-                        (72, trial_end),
+                    # 3-day trial: reminders at configured times
+                    reminder_times_minutes = [
+                        (REMINDER_1_MINUTES, trial_reminder_3day_1),
+                        (REMINDER_2_MINUTES, trial_reminder_3day_2),
+                        (TRIAL_END_3DAY_MINUTES, trial_end),
                     ]
                 
                 # Schedule each reminder job if it hasn't passed yet
                 restored_jobs = 0
-                for hours_offset, job_func in reminder_times:
-                    reminder_time = join_dt + timedelta(hours=hours_offset)
+                for minutes_offset, job_func in reminder_times_minutes:
+                    reminder_time = join_dt + timedelta(minutes=minutes_offset)
                     delay = reminder_time - now
                     
                     # Only schedule if the reminder time hasn't passed yet
@@ -1509,6 +1573,11 @@ def main() -> None:
         CallbackQueryHandler(
             continue_verification_callback, pattern="^continue_verification$"
         )
+    )
+
+    # Handle text messages during phone verification (tell user to click button instead)
+    application.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, text_during_phone_verification_handler)
     )
 
     application.add_handler(MessageHandler(filters.CONTACT, contact_handler))
