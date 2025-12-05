@@ -234,6 +234,16 @@ async def start_trial_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         return
     tg_id = user.id
 
+    # Check if user already consumed their free trial BEFORE showing verification page
+    if has_used_trial(tg_id):
+        await query.edit_message_text(
+            "You have already used your free 3-day trial once.\n\n"
+            "🎁 For more chances, you can join our giveaway channel:\n"
+            f"{GIVEAWAY_CHANNEL_URL}\n\n"
+            f"💬 Or DM {SUPPORT_CONTACT} to upgrade to the premium signals.",
+        )
+        return
+
     # Build URL - use Web App if HTTPS, fallback to regular URL if HTTP
     # Telegram Web Apps require HTTPS, so we check BASE_URL scheme
     trial_url = f"{BASE_URL.rstrip('/')}/trial?tg_id={tg_id}"

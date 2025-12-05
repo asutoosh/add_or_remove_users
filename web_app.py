@@ -14,7 +14,7 @@ import requests
 from dotenv import load_dotenv
 from flask import Flask, request, render_template_string, jsonify
 
-from storage import set_pending_verification, get_pending_verification, check_rate_limit
+from storage import set_pending_verification, get_pending_verification, check_rate_limit, has_used_trial
 
 # Configure logging
 logging.basicConfig(
@@ -34,6 +34,9 @@ BLOCKED_COUNTRY_CODE = os.environ.get("BLOCKED_COUNTRY_CODE", "PK").upper()
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 # API secret for bot-to-web-app communication (optional but recommended)
 API_SECRET = os.environ.get("API_SECRET", "")
+# Configurable support/giveaway links (fallback to defaults if not set)
+GIVEAWAY_CHANNEL_URL = os.environ.get("GIVEAWAY_CHANNEL_URL", "https://t.me/Freya_Trades")
+SUPPORT_CONTACT = os.environ.get("SUPPORT_CONTACT", "@cogitosk")
 
 # Validate critical environment variables
 if not BOT_TOKEN:
@@ -983,7 +986,19 @@ def trial() -> str:
         # Check if user already passed step1 (from query param or will be extracted by JavaScript)
         tg_id_param: Optional[str] = request.args.get("tg_id")
         if tg_id_param and tg_id_param.isdigit():
-            existing_data = get_pending_verification(int(tg_id_param))
+            tg_id = int(tg_id_param)
+            
+            # FIRST: Check if user has already used a trial (before VPN check)
+            if has_used_trial(tg_id):
+                return _render(
+                    "You have already used your free 3-day trial once.\n\n"
+                    "🎁 For more chances, you can join our giveaway channel:\n"
+                    f"{GIVEAWAY_CHANNEL_URL}\n\n"
+                    f"💬 Or DM {SUPPORT_CONTACT} to upgrade to the premium signals.",
+                    show_form=False,
+                )
+            
+            existing_data = get_pending_verification(tg_id)
             if existing_data and existing_data.get("step1_ok"):
                 # User already passed step1 - show message and close Web App
                 return _render(
@@ -1041,6 +1056,16 @@ def trial() -> str:
         )
     
     tg_id = int(tg_id_param)
+    
+    # FIRST: Check if user has already used a trial (before VPN check)
+    if has_used_trial(tg_id):
+        return _render(
+            "You have already used your free 3-day trial once.\n\n"
+            "🎁 For more chances, you can join our giveaway channel:\n"
+            f"{GIVEAWAY_CHANNEL_URL}\n\n"
+            f"💬 Or DM {SUPPORT_CONTACT} to upgrade to the premium signals.",
+            show_form=False,
+        )
     
     # Rate limiting: prevent spam/abuse
     if not check_rate_limit(tg_id, "verification", max_attempts=3, window_minutes=60):
