@@ -132,11 +132,14 @@
             }
         }
 
-        /* Button */
+        /* Telegram Widget Container */
         .btn-container {
             opacity: 0;
             transform: translateY(10px);
             transition: all 0.5s ease;
+            width: 100%;
+            max-width: 550px;
+            padding: 0 1rem;
         }
 
         .btn-container.visible {
@@ -144,31 +147,10 @@
             transform: translateY(0);
         }
 
-        .enter-btn {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.5rem;
-            padding: 0.875rem 2rem;
-            font-family: inherit;
-            font-size: clamp(0.875rem, 2vw, 1rem);
-            font-weight: 600;
-            color: #fff;
-            background: transparent;
-            border: 1px solid rgba(255,255,255,0.2);
-            border-radius: 100px;
-            text-decoration: none;
-            cursor: pointer;
-            transition: all 0.3s ease;
-        }
-
-        .enter-btn:hover {
-            background: rgba(255,255,255,0.05);
-            border-color: rgba(255,255,255,0.4);
-            transform: translateY(-2px);
-        }
-
-        .enter-btn:active {
-            transform: translateY(0);
+        /* Style the telegram widget iframe */
+        .btn-container iframe {
+            border-radius: 12px;
+            max-width: 100%;
         }
 
         /* Replay hint */
@@ -207,9 +189,9 @@
                 order: 5;
             }
             
-            .enter-btn {
-                padding: 0.875rem 1.75rem;
-                font-size: 1rem;
+            .btn-container {
+                max-width: 100%;
+                padding: 0 0.5rem;
             }
         }
 
@@ -234,10 +216,7 @@
         <div class="text-container" id="target-text"></div>
         
         <div class="btn-container" id="btn-container">
-            <a href="https://t.me/Letttttmeeeeeeiiiiiiinbot" target="_blank" rel="noopener" class="enter-btn">
-                <span>🚫</span>
-                <span>Don't Click Here</span>
-            </a>
+            <script async src="https://telegram.org/js/telegram-widget.js?22" data-telegram-post="Freya_Trades/45" data-width="100%"></script>
         </div>
     </div>
 

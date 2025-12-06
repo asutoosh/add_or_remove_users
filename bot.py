@@ -1320,8 +1320,15 @@ async def trial_reminder_3day_1(context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info(f"trial_reminder_3day_1 job executing for user {user_id}")
     await _send_trial_reminder(
         context, user_id,
-        "⏱ 1 day (24 hours) has passed, 2 days remaining in your trial.\n\n"
-        f"💬 Enjoying the signals? Upgrade anytime by contacting {SUPPORT_CONTACT}",
+        "Hey, it's Freya 💋\n\n"
+        "You've been inside my 3-Day Trial for about a day now – I hope you've already seen how I structure my trades and risk.\n\n"
+        "In this group you'll usually see:\n\n"
+        "• 🔔 2–6 signals per day\n"
+        "• 🎯 Clear entry, take-profit levels & stop-loss\n"
+        "• 📊 Screenshots + short explanation so you can learn, not just copy\n\n"
+        "If you missed anything, scroll up in the trial chat and check today's setups – everything is transparent, including wins and SL.\n\n"
+        f"If you have any questions, you can always DM me here: {SUPPORT_CONTACT}\n\n"
+        "Stay tuned, more setups are coming. 💸",
         reminder_name="24h_reminder_3day"
     )
 
@@ -1331,8 +1338,18 @@ async def trial_reminder_3day_2(context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info(f"trial_reminder_3day_2 job executing for user {user_id}")
     await _send_trial_reminder(
         context, user_id,
-        "⏱ 2 days (48 hours) have passed. Only the last 24 hours left in your trial!\n\n"
-        f"⚡ Don't miss out! Contact {SUPPORT_CONTACT} to upgrade and keep receiving signals.",
+        "Day 2 check-in 🧡\n\n"
+        "You're almost two days into the trial now. You've probably noticed:\n\n"
+        "• How I wait for clean setups, not random entries\n"
+        "• How every trade comes with a fixed SL (no \"no-SL gambling\")\n"
+        "• How I manage multiple take-profits to lock in profit\n\n"
+        "If this style fits you and you want daily guidance, my members stay with me on a 30-Day Premium plan where they get:\n\n"
+        "• Full-access signals (all pairs / gold / indices I trade)\n"
+        "• Priority support in DM\n"
+        "• Occasional market breakdowns & extra tips\n\n"
+        "I'll send you a small reminder again when your trial is about to end, so you don't miss the chance to continue.\n\n"
+        f"For now – just keep watching the signals and see if it matches your personality and schedule. ❤️\n\n"
+        f"If you already know you want to stay, message me 'PREMIUM' here: {SUPPORT_CONTACT}",
         reminder_name="48h_reminder_3day"
     )
 
@@ -1411,11 +1428,17 @@ async def trial_end(context: ContextTypes.DEFAULT_TYPE) -> None:
         await context.bot.send_message(
             chat_id=user_id,
             text=(
-                "⛔ Your trial has finished. If you enjoyed the signals, you can upgrade "
-                "to a paid plan to continue.\n\n"
-                f"📝 We'd love to hear your feedback:\n{FEEDBACK_FORM_URL}\n\n"
-                f"🎁 For more chances, join our giveaway: {GIVEAWAY_CHANNEL_URL}\n"
-                f"💬 Ready to upgrade? DM {SUPPORT_CONTACT}"
+                "Your trial just ended 🕊\n\n"
+                "Thank you for testing Freya's Flirty Profits for 3 days.\n\n"
+                "If you liked the structure of the signals and want to keep going, here are your options:\n\n"
+                "✅ 30-Day Premium Membership\n"
+                "– Full access to all signals\n"
+                "– Same entries I personally take\n"
+                "– Ongoing DM support for questions\n\n"
+                f"Message me directly: {SUPPORT_CONTACT}\n\n"
+                "If you're not ready yet, no pressure – you can also stay connected through my public channel for updates and occasional previews:\n\n"
+                f"🌐 Public channel: {GIVEAWAY_CHANNEL_URL}\n\n"
+                "Trade safe, manage your risk, and remember: no one wins every trade – the edge comes from discipline. 💚"
             ),
         )
         logger.info(f"✅ Sent trial end message to user {user_id}")
