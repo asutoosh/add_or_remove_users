@@ -424,7 +424,12 @@ async def continue_verification_callback(update: Update, context: ContextTypes.D
     logger.info(f"Verification Step 1 confirmed passed for tg_id={tg_id}")
 
     contact_button = KeyboardButton(text="📱 Share phone number", request_contact=True)
-    keyboard = ReplyKeyboardMarkup([[contact_button]], resize_keyboard=True, one_time_keyboard=True)
+    deny_button = KeyboardButton(text="❌ No thanks")
+    keyboard = ReplyKeyboardMarkup(
+        [[contact_button], [deny_button]], 
+        resize_keyboard=True, 
+        one_time_keyboard=True
+    )
 
     await query.message.reply_text(
         "Step 1 passed ✅.\n\n"
@@ -441,11 +446,40 @@ async def retry_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     Simple /retry command to re-show the contact request keyboard if user cancelled.
     """
     contact_button = KeyboardButton(text="📱 Share phone number", request_contact=True)
-    keyboard = ReplyKeyboardMarkup([[contact_button]], resize_keyboard=True, one_time_keyboard=True)
+    deny_button = KeyboardButton(text="❌ No thanks")
+    keyboard = ReplyKeyboardMarkup(
+        [[contact_button], [deny_button]], 
+        resize_keyboard=True, 
+        one_time_keyboard=True
+    )
 
     await update.message.reply_text(
         "Let's try again. Please share your phone number using the button below.",
         reply_markup=keyboard,
+    )
+
+
+async def phone_deny_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Handle when user clicks 'No thanks' / deny button for phone verification.
+    """
+    if not update.message or not update.effective_user:
+        return
+    
+    user = update.effective_user
+    logger.info(f"User {user.id} denied phone verification")
+    
+    await update.message.reply_text(
+        "No problem! 🙏\n\n"
+        "Unfortunately, we need phone verification to prevent abuse and ensure "
+        "fair access to the trial.\n\n"
+        "If you change your mind, you can:\n"
+        "• Type /retry to try again\n"
+        "• Type /start to restart the process\n\n"
+        f"🎁 You can also join our public giveaway channel for free content:\n"
+        f"{GIVEAWAY_CHANNEL_URL}\n\n"
+        f"💬 Or DM {SUPPORT_CONTACT} if you have any questions!",
+        reply_markup=ReplyKeyboardRemove(),
     )
 
 
@@ -1596,6 +1630,11 @@ def main() -> None:
         CallbackQueryHandler(
             continue_verification_callback, pattern="^continue_verification$"
         )
+    )
+
+    # Handle "No thanks" / deny button for phone verification
+    application.add_handler(
+        MessageHandler(filters.Regex(r"^❌ No thanks$"), phone_deny_handler)
     )
 
     # Handle text messages during phone verification (tell user to click button instead)
