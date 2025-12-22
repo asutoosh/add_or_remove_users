@@ -28,6 +28,7 @@ TRIAL_LOG_FILE = os.path.join(BASE_DIR, "trial_users.json")
 USED_TRIALS_FILE = os.path.join(BASE_DIR, "used_trials.json")
 ACTIVE_TRIALS_FILE = os.path.join(BASE_DIR, "active_trials.json")
 INVITES_FILE = os.path.join(BASE_DIR, "invites.json")
+START_USERS_CLICKS_FILE = os.path.join(BASE_DIR, "startusersclicks.json")
 
 _lock = threading.Lock()
 
@@ -286,4 +287,77 @@ def check_rate_limit(tg_id: int, action: str, max_attempts: int = 5, window_minu
         
         return True  # Allowed
 
+
+def track_start_click(user_info: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Track when a user clicks the /start command.
+    If user is new, stores all their info.
+    If user exists, increments their click count and updates last_click_at.
+    
+    user_info should contain: tg_id, username, first_name, last_name, language_code, is_premium, is_bot
+    
+    Returns the user record (new or updated).
+    """
+    tg_id = str(user_info.get("tg_id", ""))
+    if not tg_id:
+        logger.warning("track_start_click: No tg_id provided")
+        return {}
+    
+    with _lock:
+        data = _load_json(START_USERS_CLICKS_FILE, {})
+        now = datetime.now(timezone.utc).isoformat()
+        
+        if tg_id in data:
+            # User exists - increment click count and update last_click_at
+            data[tg_id]["click_count"] = data[tg_id].get("click_count", 1) + 1
+            data[tg_id]["last_click_at"] = now
+            # Update any changed user info (username, name, etc. can change)
+            if user_info.get("username"):
+                data[tg_id]["username"] = user_info.get("username")
+            if user_info.get("first_name"):
+                data[tg_id]["first_name"] = user_info.get("first_name")
+            if user_info.get("last_name"):
+                data[tg_id]["last_name"] = user_info.get("last_name")
+            if user_info.get("language_code"):
+                data[tg_id]["language_code"] = user_info.get("language_code")
+            if user_info.get("is_premium") is not None:
+                data[tg_id]["is_premium"] = user_info.get("is_premium")
+            logger.info(f"track_start_click: User {tg_id} clicked /start again, count={data[tg_id]['click_count']}")
+        else:
+            # New user - store all info
+            data[tg_id] = {
+                "tg_id": int(tg_id),
+                "username": user_info.get("username"),
+                "first_name": user_info.get("first_name"),
+                "last_name": user_info.get("last_name"),
+                "language_code": user_info.get("language_code"),
+                "is_premium": user_info.get("is_premium", False),
+                "is_bot": user_info.get("is_bot", False),
+                "first_click_at": now,
+                "last_click_at": now,
+                "click_count": 1,
+            }
+            logger.info(f"track_start_click: New user {tg_id} (@{user_info.get('username')}) clicked /start")
+        
+        _save_json(START_USERS_CLICKS_FILE, data)
+        return data[tg_id]
+
+
+def get_start_user_info(tg_id: int) -> Optional[Dict[str, Any]]:
+    """
+    Get stored info for a user who clicked /start.
+    Returns None if user not found.
+    """
+    with _lock:
+        data = _load_json(START_USERS_CLICKS_FILE, {})
+        return data.get(str(tg_id))
+
+
+def get_all_start_users() -> Dict[str, Any]:
+    """
+    Get all users who have clicked /start.
+    Returns a dict mapping tg_id -> user info.
+    """
+    with _lock:
+        return _load_json(START_USERS_CLICKS_FILE, {})
 

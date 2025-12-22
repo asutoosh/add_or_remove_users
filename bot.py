@@ -87,6 +87,7 @@ from storage import (
     get_invite_info,
     set_invite_info,
     get_valid_invite_link,
+    track_start_click,
 )
 
 
@@ -229,6 +230,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     if not user or not update.message:
         return
+
+    # Track /start command click - store user info or increment click count
+    track_start_click({
+        "tg_id": user.id,
+        "username": user.username,
+        "first_name": user.first_name,
+        "last_name": user.last_name,
+        "language_code": user.language_code,
+        "is_premium": getattr(user, 'is_premium', False),
+        "is_bot": user.is_bot,
+    })
 
     # If user already consumed their free trial, don't allow another one
     if has_used_trial(user.id):
