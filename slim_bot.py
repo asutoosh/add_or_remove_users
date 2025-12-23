@@ -32,6 +32,7 @@ from storage import (
     get_used_trial_info,
     get_all_active_trials,
     append_trial_log,
+    track_start_click,
 )
 
 # Configure logging
@@ -117,6 +118,17 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     if not user:
         return
+    
+    # Track every /start click for analytics (before any blocking checks)
+    track_start_click({
+        "tg_id": user.id,
+        "username": user.username,
+        "first_name": user.first_name,
+        "last_name": user.last_name,
+        "language_code": user.language_code,
+        "is_premium": getattr(user, 'is_premium', False),
+        "is_bot": user.is_bot,
+    })
     
     # Check if user already used trial
     if has_used_trial(user.id):
