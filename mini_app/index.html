@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Freya Quinn - Free Trial</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Screen 1: Welcome -->
+        <div id="screen-welcome" class="screen active">
+            <div class="screen-content">
+                <div class="logo-section">
+                    <div class="logo-icon">💎</div>
+                    <h1 class="logo-text">FREYA QUINN</h1>
+                </div>
+                <div class="hero-section">
+                    <h2>Get Your <span class="highlight">FREE</span> 3-Day Trial</h2>
+                    <p>Access premium trading signals with precise entries, TPs, and SLs</p>
+                </div>
+                <div class="features-grid">
+                    <div class="feature-card">
+                        <span class="feature-icon">🛡️</span>
+                        <span class="feature-text">Strict Risk Management</span>
+                    </div>
+                    <div class="feature-card">
+                        <span class="feature-icon">🚀</span>
+                        <span class="feature-text">High Win Rate</span>
+                    </div>
+                    <div class="feature-card">
+                        <span class="feature-icon">📊</span>
+                        <span class="feature-text">Real-Time Alerts</span>
+                    </div>
+                    <div class="feature-card">
+                        <span class="feature-icon">🎯</span>
+                        <span class="feature-text">Precise Entries</span>
+                    </div>
+                </div>
+                <button class="btn-primary" id="btn-start-trial">
+                    <span>Start Free Trial</span>
+                    <span class="btn-arrow">→</span>
+                </button>
+                <p class="disclaimer">No credit card required • Cancel anytime</p>
+            </div>
+        </div>
+
+        <!-- Screen 2: IP Check -->
+        <div id="screen-ip-check" class="screen">
+            <div class="screen-content centered">
+                <div class="loading-section">
+                    <div class="spinner"></div>
+                    <h2>Verifying Connection</h2>
+                    <p>Please wait a moment...</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Screen 3: IP Error (VPN/Country) -->
+        <div id="screen-ip-error" class="screen">
+            <div class="screen-content centered">
+                <div class="error-icon">❌</div>
+                <h2 id="ip-error-title">VPN Detected</h2>
+                <p id="ip-error-message">Please turn off your VPN or proxy and try again.</p>
+                <button class="btn-secondary" id="btn-retry-ip">
+                    <span>Try Again</span>
+                </button>
+            </div>
+        </div>
+
+        <!-- Screen 4: Verification Form -->
+        <div id="screen-verify" class="screen">
+            <div class="screen-content">
+                <div class="success-badge">✅ Connection Verified</div>
+                <h2>Almost There!</h2>
+                <p>Please fill in your details to continue</p>
+                
+                <form id="verify-form" class="form-section">
+                    <div class="form-group">
+                        <label for="input-name">Your Name</label>
+                        <input type="text" id="input-name" name="name" required placeholder="Enter your name">
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="input-country">Your Country</label>
+                        <select id="input-country" name="country" required>
+                            <option value="">Select your country</option>
+                            <option value="United States">United States</option>
+                            <option value="United Kingdom">United Kingdom</option>
+                            <option value="Canada">Canada</option>
+                            <option value="Australia">Australia</option>
+                            <option value="Germany">Germany</option>
+                            <option value="France">France</option>
+                            <option value="Netherlands">Netherlands</option>
+                            <option value="Spain">Spain</option>
+                            <option value="Italy">Italy</option>
+                            <option value="Brazil">Brazil</option>
+                            <option value="Mexico">Mexico</option>
+                            <option value="Japan">Japan</option>
+                            <option value="South Korea">South Korea</option>
+                            <option value="Singapore">Singapore</option>
+                            <option value="UAE">United Arab Emirates</option>
+                            <option value="Saudi Arabia">Saudi Arabia</option>
+                            <option value="South Africa">South Africa</option>
+                            <option value="Nigeria">Nigeria</option>
+                            <option value="Kenya">Kenya</option>
+                            <option value="Other">Other</option>
+                        </select>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="input-email">Email (optional)</label>
+                        <input type="email" id="input-email" name="email" placeholder="you@example.com">
+                    </div>
+                    
+                    <div class="form-group checkbox-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="input-marketing" name="marketing">
+                            <span class="checkmark"></span>
+                            <span>Receive updates and trading tips</span>
+                        </label>
+                    </div>
+                    
+                    <button type="submit" class="btn-primary" id="btn-verify-submit">
+                        <span>Continue</span>
+                        <span class="btn-arrow">→</span>
+                    </button>
+                </form>
+                
+                <p class="privacy-note">🔒 We only use your data for verification</p>
+            </div>
+        </div>
+
+        <!-- Screen 5: Phone Verification -->
+        <div id="screen-phone" class="screen">
+            <div class="screen-content centered">
+                <div class="phone-icon">📱</div>
+                <h2>Verify Your Phone</h2>
+                <p>We need to verify your phone number to prevent abuse and ensure fair access to the trial.</p>
+                <button class="btn-primary" id="btn-share-phone">
+                    <span>Share Phone Number</span>
+                </button>
+                <p class="privacy-note">🔒 Your number is never shared with third parties</p>
+            </div>
+        </div>
+
+        <!-- Screen 6: Success -->
+        <div id="screen-success" class="screen">
+            <div class="screen-content centered">
+                <div class="success-icon">🎉</div>
+                <h2>You're In!</h2>
+                <p>Your 3-day trial is ready. Click below to join the private channel.</p>
+                <a href="#" id="invite-link" class="btn-primary" target="_blank">
+                    <span>Join Trial Channel</span>
+                    <span class="btn-arrow">→</span>
+                </a>
+                <p class="link-expires">Link expires in 5 hours</p>
+                <div class="reminder-note">
+                    <span>📩</span>
+                    <span>You'll receive reminders as your trial ends</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Screen 7: Already Used Trial -->
+        <div id="screen-used" class="screen">
+            <div class="screen-content centered">
+                <div class="warning-icon">⚠️</div>
+                <h2>Trial Already Used</h2>
+                <p>You've already had your free 3-day trial.</p>
+                <div class="options-section">
+                    <a href="https://t.me/Freya_Trades" class="btn-secondary" target="_blank">
+                        <span>🎁 Join Giveaways</span>
+                    </a>
+                    <a href="https://t.me/cogitosk" class="btn-outline" target="_blank">
+                        <span>💬 DM to Upgrade</span>
+                    </a>
+                </div>
+            </div>
+        </div>
+
+        <!-- Screen 8: Active Trial -->
+        <div id="screen-active" class="screen">
+            <div class="screen-content centered">
+                <div class="active-icon">✅</div>
+                <h2>Trial Active!</h2>
+                <p>You're currently in your free trial.</p>
+                <div class="trial-info-card">
+                    <div class="trial-stat">
+                        <span class="stat-label">Time Elapsed</span>
+                        <span class="stat-value" id="elapsed-time">--</span>
+                    </div>
+                    <div class="trial-stat">
+                        <span class="stat-label">Time Remaining</span>
+                        <span class="stat-value highlight" id="remaining-time">--</span>
+                    </div>
+                </div>
+                <button class="btn-secondary" id="btn-close-app">
+                    Close & Return to Telegram
+                </button>
+            </div>
+        </div>
+
+        <!-- Screen 9: Error -->
+        <div id="screen-error" class="screen">
+            <div class="screen-content centered">
+                <div class="error-icon">❌</div>
+                <h2 id="error-title">Something Went Wrong</h2>
+                <p id="error-message">Please try again later.</p>
+                <button class="btn-secondary" id="btn-retry">
+                    <span>Try Again</span>
+                </button>
+            </div>
+        </div>
+
+        <!-- Loading Overlay -->
+        <div id="loading-overlay" class="loading-overlay hidden">
+            <div class="spinner"></div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
