@@ -18,6 +18,7 @@ from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
     ChatMemberHandler,
+    CommandHandler,
     ContextTypes,
 )
 
@@ -76,6 +77,8 @@ TRIAL_COOLDOWN_DAYS = 30
 GIVEAWAY_CHANNEL_URL = os.environ.get("GIVEAWAY_CHANNEL_URL", "https://t.me/Freya_Trades")
 SUPPORT_CONTACT = os.environ.get("SUPPORT_CONTACT", "@cogitosk")
 FEEDBACK_FORM_URL = os.environ.get("FEEDBACK_FORM_URL", "https://forms.gle/K7ubyn2tvzuYeHXn9")
+SUPPORT_FORM_URL = os.environ.get("SUPPORT_FORM_URL", "https://forms.gle/CJbNczZ6BcKjk6Bz9")
+BASE_URL = os.environ.get("BASE_URL", "https://freyatrades.live")
 
 # Validate required vars
 if not BOT_TOKEN:
@@ -100,6 +103,103 @@ def _parse_iso_to_utc(value: str) -> datetime:
 def _is_weekend(dt: datetime) -> bool:
     local_dt = dt + timedelta(hours=TIMEZONE_OFFSET_HOURS)
     return local_dt.weekday() >= 5
+
+
+# =============================================================================
+# Command Handlers (Fallback for non-Mini App clients)
+# =============================================================================
+
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
+
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /start command - show Mini App button."""
+    user = update.effective_user
+    if not user:
+        return
+    
+    keyboard = [[
+        InlineKeyboardButton(
+            text="🚀 Start Free Trial",
+            web_app=WebAppInfo(url=BASE_URL)
+        )
+    ]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        f"Hey {user.first_name}! 👋\n\n"
+        "Welcome to **Freya Quinn's Flirty Profits**! 💋\n\n"
+        "Get a FREE 3-Day Trial of my VIP signals.\n\n"
+        "Tap the button below to start:\n",
+        reply_markup=reply_markup,
+        parse_mode="Markdown"
+    )
+
+
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /help command."""
+    keyboard = [[
+        InlineKeyboardButton(
+            text="🚀 Open Mini App",
+            web_app=WebAppInfo(url=BASE_URL)
+        )
+    ]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        "📚 **Commands & Help**\n\n"
+        "/start - Start your free trial\n"
+        "/help - This help message\n"
+        "/faq - Frequently asked questions\n"
+        "/about - About Freya Quinn\n"
+        "/support - Contact support\n\n"
+        f"💬 Direct support: {SUPPORT_CONTACT}",
+        reply_markup=reply_markup,
+        parse_mode="Markdown"
+    )
+
+
+async def cmd_faq(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /faq command."""
+    await update.message.reply_text(
+        "❓ **Frequently Asked Questions**\n\n"
+        "**Q: How long is the trial?**\n"
+        "A: 3 days (weekdays) or 5 days (weekends).\n\n"
+        "**Q: What do I get?**\n"
+        "A: 2-6 trading signals daily with clear entry, TP & SL.\n\n"
+        "**Q: How do I start?**\n"
+        "A: Tap /start and click the button.\n\n"
+        "**Q: What happens after trial ends?**\n"
+        "A: You can upgrade to Premium for continued access.\n\n"
+        f"More questions? DM {SUPPORT_CONTACT}",
+        parse_mode="Markdown"
+    )
+
+
+async def cmd_about(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /about command."""
+    await update.message.reply_text(
+        "💋 **About Freya Quinn**\n\n"
+        "I'm Freya - your flirty forex friend!\n\n"
+        "I provide premium trading signals with:\n"
+        "• 🎯 High win rate\n"
+        "• 📊 Clear entry, TP & SL\n"
+        "• 💰 Consistent profits\n\n"
+        f"🎁 Free giveaways: {GIVEAWAY_CHANNEL_URL}\n"
+        f"💬 Questions: {SUPPORT_CONTACT}",
+        parse_mode="Markdown"
+    )
+
+
+async def cmd_support(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /support command."""
+    await update.message.reply_text(
+        "🆘 **Need Help?**\n\n"
+        f"📝 Support Form: {SUPPORT_FORM_URL}\n\n"
+        f"💬 Direct message: {SUPPORT_CONTACT}\n\n"
+        f"📣 Feedback: {FEEDBACK_FORM_URL}\n\n"
+        "We typically respond within 24 hours!",
+        parse_mode="Markdown"
+    )
 
 
 # =============================================================================
@@ -498,14 +598,21 @@ def main():
     # Periodic cleanup
     jq.run_repeating(periodic_cleanup, interval=timedelta(hours=1), first=timedelta(minutes=5))
     
-    # Add handler
+    # Add command handlers (fallback for non-Mini App clients)
+    application.add_handler(CommandHandler("start", cmd_start))
+    application.add_handler(CommandHandler("help", cmd_help))
+    application.add_handler(CommandHandler("faq", cmd_faq))
+    application.add_handler(CommandHandler("about", cmd_about))
+    application.add_handler(CommandHandler("support", cmd_support))
+    
+    # Add chat member handler
     application.add_handler(
         ChatMemberHandler(trial_chat_member_update, ChatMemberHandler.CHAT_MEMBER)
     )
     
-    # Start polling
-    allowed_updates = ["chat_member"]
-    logger.info("Starting slim bot...")
+    # Start polling - include 'message' for commands and 'chat_member' for join/leave
+    allowed_updates = ["message", "chat_member"]
+    logger.info("Starting slim bot with command handlers...")
     application.run_polling(allowed_updates=allowed_updates)
 
 
