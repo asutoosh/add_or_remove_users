@@ -30,7 +30,7 @@ Thumbs.db
 *.log
 
 # Deployment guides (not needed in repo)
-
+md/
 *.md
 *DEPLOYMENT*.md
 *deployment*.md
