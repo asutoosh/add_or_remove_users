@@ -88,6 +88,8 @@ from storage import (
     set_invite_info,
     get_valid_invite_link,
     track_start_click,
+    atomic_check_and_reserve_trial,
+    cleanup_expired_pending_verifications,
 )
 
 
@@ -100,6 +102,13 @@ BASE_URL = os.environ.get("BASE_URL", "http://127.0.0.1:5000")
 BLOCKED_PHONE_COUNTRY_CODE = os.environ.get("BLOCKED_PHONE_COUNTRY_CODE", "+91")
 TIMEZONE_OFFSET_HOURS = _safe_float_env("TIMEZONE_OFFSET_HOURS", 0.0)
 API_SECRET = os.environ.get("API_SECRET", "")  # Optional: for web app API authentication
+
+# SECURITY FIX #6: Warn if API_SECRET not set
+if not API_SECRET:
+    logger.warning(
+        "⚠️ API_SECRET not set! The /api/get-verification endpoint will be publicly accessible. "
+        "Set API_SECRET in your .env file for production."
+    )
 
 # Validate required environment variables for production deployment
 if not BOT_TOKEN:
@@ -151,11 +160,29 @@ logger.info(f"REMINDER_3_MINUTES: {REMINDER_3_MINUTES} min ({REMINDER_3_MINUTES/
 logger.info(f"REMINDER_4_MINUTES: {REMINDER_4_MINUTES} min ({REMINDER_4_MINUTES/60:.1f} hours)")
 logger.info(f"TRIAL_END_5DAY_MINUTES: {TRIAL_END_5DAY_MINUTES} min ({TRIAL_END_5DAY_MINUTES/60:.1f} hours)")
 
-# Validate TRIAL_CHANNEL_ID format
+# CRITICAL: Validate TRIAL_CHANNEL_ID - bot cannot function without valid channel
 if TRIAL_CHANNEL_ID == 0:
-    logger.error("⚠️ TRIAL_CHANNEL_ID is 0! Set it in your .env file. Join/leave detection will NOT work!")
-elif TRIAL_CHANNEL_ID > 0:
-    logger.warning(f"⚠️ TRIAL_CHANNEL_ID ({TRIAL_CHANNEL_ID}) is positive. Channels/supergroups usually have NEGATIVE IDs like -1001234567890")
+    error_msg = (
+        "❌ CRITICAL ERROR: TRIAL_CHANNEL_ID not set!\n\n"
+        "Set TRIAL_CHANNEL_ID in your environment (e.g. .env file).\n"
+        "Get the channel ID by adding @iDbot to your channel.\n\n"
+        "Example: TRIAL_CHANNEL_ID=-1001234567890"
+    )
+    logger.error(error_msg)
+    raise ValueError(error_msg)
+
+if TRIAL_CHANNEL_ID >= 0:
+    error_msg = (
+        f"❌ CRITICAL ERROR: Invalid TRIAL_CHANNEL_ID: {TRIAL_CHANNEL_ID}\n\n"
+        "Channel IDs must be NEGATIVE numbers like -1001234567890.\n"
+        "Positive numbers are for private chats, not channels!\n\n"
+        "Get the correct ID by adding @iDbot to your channel."
+    )
+    logger.error(error_msg)
+    raise ValueError(error_msg)
+
+logger.info(f"✅ TRIAL_CHANNEL_ID validated: {TRIAL_CHANNEL_ID}")
+
 
 
 # Track last time check to detect clock manipulation
@@ -190,40 +217,48 @@ def validate_trial_data(trial_data: dict, user_id: int) -> bool:
     """
     Validate trial data hasn't been tampered with.
     Returns True if valid, False if tampered.
+    Checks: signature, required fields, reasonable values.
     """
+    # Check required fields exist
     if "join_time" not in trial_data or "total_hours" not in trial_data:
+        logger.warning(f"validate_trial_data: Missing required fields for user {user_id}")
         return False
     
-    try:
-        join_time = _parse_iso_to_utc(trial_data["join_time"])
-        # Normalize total_hours to int for consistent comparisons
-        total_hours = int(float(trial_data["total_hours"]))
-        
-        # Calculate expected end time
-        expected_end = join_time + timedelta(hours=total_hours)
-        
-        # If trial_end_at exists, it should match calculation (within 1 hour tolerance)
-        if "trial_end_at" in trial_data:
-            claimed_end = _parse_iso_to_utc(trial_data["trial_end_at"])
-            time_diff = abs((claimed_end - expected_end).total_seconds())
-            if time_diff > TAMPERING_TOLERANCE_SECONDS:  # More than tolerance = tampering
-                logger.warning(f"Trial data tampering detected for user {user_id}")
-                return False
-        
-        # Check total_hours is valid (3 or 5 days only)
-        if total_hours not in [TRIAL_HOURS_3_DAY, TRIAL_HOURS_5_DAY]:
-            logger.warning(f"Invalid total_hours ({total_hours}) for user {user_id}")
-            return False
-        
-        # Check join_time is not in future
-        if join_time > _now_utc():
-            logger.warning(f"Join time in future for user {user_id}")
-            return False
-        
-        return True
-    except Exception as e:
-        logger.warning(f"Error validating trial data for user {user_id}: {e}")
+    # SECURITY: Verify HMAC signature
+    from storage import _verify_trial_signature
+    if not _verify_trial_signature(trial_data, user_id):
+        logger.error(f"validate_trial_data: SIGNATURE VERIFICATION FAILED for user {user_id}")
         return False
+    
+    # Validate data types and ranges
+    try:
+        total_hours = float(trial_data["total_hours"])
+        
+        # Total hours must be reasonable (3 or 5 days)
+        if total_hours not in [TRIAL_HOURS_3_DAY, TRIAL_HOURS_5_DAY]:
+            logger.warning(f"validate_trial_data: Invalid total_hours {total_hours} for user {user_id}")
+            return False
+        
+        # Parse and validate join time
+        join_time = _parse_iso_to_utc(trial_data["join_time"])
+        now = _now_utc()
+        
+        # Join time can't be in the future
+        if join_time > now:
+            logger.warning(f"validate_trial_data: Join time in future for user {user_id}")
+            return False
+        
+        # Join time can't be more than 30 days in the past
+        days_ago = (now - join_time).total_seconds() / 86400
+        if days_ago > 30:
+            logger.warning(f"validate_trial_data: Join time too old ({days_ago} days) for user {user_id}")
+            return False
+            
+    except (ValueError, KeyError) as e:
+        logger.warning(f"validate_trial_data: Invalid data format for user {user_id}: {e}")
+        return False
+    
+    return True
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -335,8 +370,9 @@ async def start_trial_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         return
     tg_id = user.id
 
-    # Check if user already consumed their free trial BEFORE showing verification page
-    if has_used_trial(tg_id):
+    # SECURITY FIX #4: Use atomic check to prevent race condition
+    # Check if user already consumed trial AND reserve it atomically
+    if not atomic_check_and_reserve_trial(tg_id):
         await query.edit_message_text(
             "You have already used your free 3-day trial once.\n\n"
             "🎁 For more chances, you can join our giveaway channel:\n"
@@ -917,52 +953,55 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     data["phone"] = phone
     set_pending_verification(user.id, data)
 
-    # Before generating a new invite link, check if user recently generated one
-    # Use atomic function to prevent race condition (multiple rapid clicks)
-    now = _now_utc()
-    existing_link = get_valid_invite_link(user.id, now)
+    # ATOMIC CHECK: Use new atomic function to prevent race condition
+    from storage import atomic_create_or_get_invite, finalize_invite_creation, cleanup_failed_invite_creation
     
-    # Send message if existing link is valid
-    if existing_link:
+    now = _now_utc()
+    expires_at_dt = now + timedelta(hours=INVITE_LINK_EXPIRY_HOURS)
+    
+    # Prepare invite data
+    invite_data = {
+        "invite_created_at": now.isoformat(),
+        "invite_expires_at": expires_at_dt.isoformat(),
+    }
+    
+    # Atomically check/create
+    result = atomic_create_or_get_invite(user.id, invite_data)
+    
+    if result["action"] == "existing":
+        # Existing valid link found
         logger.info(f"User {user.id} already has valid invite link, returning existing")
         await update.message.reply_text(
             "You already generated a trial invite link recently.\n\n"
             "Please use this link to join the trial channel:\n"
-            f"{existing_link}\n\n"
+            f"{result['link']}\n\n"
             "If you have any issues accessing it, use /support to contact us.",
-            reply_markup=ReplyKeyboardRemove(),  # Remove the keyboard
+            reply_markup=ReplyKeyboardRemove(),
         )
         return
 
-    await update.message.reply_text("Verification 2 passed ✅. Generating your one-time invite link...")
 
     bot = context.bot
     try:
         # Expire invite link after configured hours
-        expires_at_dt = now + timedelta(hours=INVITE_LINK_EXPIRY_HOURS)
         invite_link = await bot.create_chat_invite_link(
             chat_id=TRIAL_CHANNEL_ID,
             member_limit=1,
             expire_date=int(expires_at_dt.timestamp()),
         )
         logger.info(f"Created invite link for user {user.id}: {invite_link.invite_link}")
+        
+        # Finalize the creation
+        finalize_invite_creation(user.id, invite_link.invite_link)
+        
     except Exception as e:  # pragma: no cover - defensive
         logger.error(f"Failed to create invite link for user {user.id}: {e}")
+        cleanup_failed_invite_creation(user.id)  # Clean up placeholder
         await update.message.reply_text(
             "Failed to create an invite link. Please try again later.",
             reply_markup=ReplyKeyboardRemove(),  # Remove the keyboard
         )
         return
-
-    # Store invite metadata so we don't generate unlimited fresh links
-    set_invite_info(
-        user.id,
-        {
-            "invite_link": invite_link.invite_link,
-            "invite_created_at": now.isoformat(),
-            "invite_expires_at": expires_at_dt.isoformat(),
-        },
-    )
 
     await update.message.reply_text(
         "Here is your one-time invite link to the private trial channel.\n"
@@ -992,7 +1031,17 @@ async def periodic_trial_cleanup(context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Periodic cleanup job that runs every hour to check all active trials
     and end expired ones. This is a fallback in case scheduled jobs fail.
+    Also cleans up expired pending verifications.
     """
+    # SECURITY FIX #5: Clean up expired pending verifications
+    try:
+        count = cleanup_expired_pending_verifications()
+        if count > 0:
+            logger.info(f"Cleaned up {count} expired pending verifications")
+    except Exception as e:
+        logger.error(f"Error in cleanup_expired_pending_verifications: {e}")
+    
+    # Clean up expired trials
     now = _now_utc()
     active_trials = get_all_active_trials()
     

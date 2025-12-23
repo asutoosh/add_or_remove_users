@@ -3,6 +3,8 @@ import logging
 import os
 import stat
 import threading
+import hmac
+import hashlib
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, List
 
@@ -20,6 +22,103 @@ def _parse_iso_to_utc(value: str) -> datetime:
         # Assume naive timestamps were stored as UTC
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)
+
+
+def _get_signing_key() -> bytes:
+    """
+    Get secret key for HMAC signing.
+    Uses BOT_TOKEN from environment (kept secret).
+    """
+    bot_token = os.environ.get("BOT_TOKEN", "")
+    if not bot_token:
+        logger.warning("BOT_TOKEN not set - trial data signing disabled")
+        return b"insecure_fallback_key"  # Fallback (should never happen in production)
+    return bot_token.encode()
+
+
+def _sign_trial_data(data: Dict[str, Any], user_id: int) -> str:
+    """
+    Generate HMAC-SHA256 signature for trial data to prevent tampering.
+    
+    Signs: user_id + join_time + total_hours + trial_end_at
+    Returns: hex-encoded signature
+    """
+    # Create canonical message
+    join_time = data.get("join_time", "")
+    total_hours = str(data.get("total_hours", ""))
+    trial_end_at = data.get("trial_end_at", "")
+    
+    message = f"{user_id}|{join_time}|{total_hours}|{trial_end_at}".encode()
+    
+    # Generate HMAC
+    secret = _get_signing_key()
+    signature = hmac.new(secret, message, hashlib.sha256).hexdigest()
+    
+    logger.debug(f"Generated signature for user {user_id}")
+    return signature
+
+
+def _verify_trial_signature(data: Dict[str, Any], user_id: int) -> bool:
+    """
+    Verify HMAC signature of trial data.
+    Returns True if valid, False if tampered.
+    """
+    if "signature" not in data:
+        logger.warning(f"No signature in trial data for user {user_id}")
+        return False
+    
+    stored_sig = data["signature"]
+    expected_sig = _sign_trial_data(data, user_id)
+    
+    # Constant-time comparison
+    is_valid = hmac.compare_digest(stored_sig, expected_sig)
+    
+    if not is_valid:
+        logger.error(f"❌ SECURITY ALERT: Invalid signature for user {user_id} - data may be tampered!")
+    
+    return is_valid
+
+
+def _sign_invite_data(data: Dict[str, Any], user_id: int) -> str:
+    """
+    Generate HMAC-SHA256 signature for invite data to prevent tampering.
+    
+    Signs: user_id + invite_link + created_at + expires_at
+    Returns: hex-encoded signature
+    """
+    invite_link = data.get("invite_link", "")
+    created_at = data.get("invite_created_at", "")
+    expires_at = data.get("invite_expires_at", "")
+    
+    message = f"{user_id}|{invite_link}|{created_at}|{expires_at}".encode()
+    
+    # Generate HMAC
+    secret = _get_signing_key()
+    signature = hmac.new(secret, message, hashlib.sha256).hexdigest()
+    
+    logger.debug(f"Generated invite signature for user {user_id}")
+    return signature
+
+
+def _verify_invite_signature(data: Dict[str, Any], user_id: int) -> bool:
+    """
+    Verify HMAC signature of invite data.
+    Returns True if valid, False if tampered.
+    """
+    if "signature" not in data:
+        logger.warning(f"No signature in invite data for user {user_id}")
+        return False
+    
+    stored_sig = data["signature"]
+    expected_sig = _sign_invite_data(data, user_id)
+    
+    # Constant-time comparison
+    is_valid = hmac.compare_digest(stored_sig, expected_sig)
+    
+    if not is_valid:
+        logger.error(f"❌ SECURITY ALERT: Invalid invite signature for user {user_id} - data may be tampered!")
+    
+    return is_valid
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -163,6 +262,38 @@ def get_used_trial_info(tg_id: int) -> Optional[Dict[str, Any]]:
         return data.get(str(tg_id))
 
 
+def atomic_check_and_reserve_trial(tg_id: int) -> bool:
+    """
+    SECURITY FIX #4: Atomically check if user can start trial AND mark as reserved.
+    Returns True if allowed (and now reserved), False if already used or active.
+    
+    This prevents race condition where two simultaneous requests both pass
+    has_used_trial() check and both create invites.
+    """
+    with _lock:
+        # Check if already used
+        used_data = _load_json(USED_TRIALS_FILE, {})
+        if str(tg_id) in used_data:
+            logger.info(f"atomic_check_and_reserve_trial: User {tg_id} already used trial")
+            return False
+        
+        # Check if already has active trial
+        active_data = _load_json(ACTIVE_TRIALS_FILE, {})
+        if str(tg_id) in active_data:
+            logger.info(f"atomic_check_and_reserve_trial: User {tg_id} already has active trial")
+            return False
+        
+        # Reserve by marking as "pending trial start"
+        # This prevents concurrent requests from passing
+        used_data[str(tg_id)] = {
+            "reserved_at": datetime.now(timezone.utc).isoformat(),
+            "status": "reserved"
+        }
+        _save_json(USED_TRIALS_FILE, used_data)
+        logger.info(f"atomic_check_and_reserve_trial: Reserved trial for user {tg_id}")
+        return True
+
+
 def get_all_active_trials() -> Dict[str, Any]:
     """
     Return all active trial records as a mapping of tg_id -> info.
@@ -186,12 +317,16 @@ def set_active_trial(tg_id: int, info: Dict[str, Any]) -> None:
     """
     Store or update active trial info for a user.
     Called when the user joins the trial channel.
+    Automatically adds HMAC signature to prevent tampering.
     """
     with _lock:
+        # Add signature before saving
+        info["signature"] = _sign_trial_data(info, tg_id)
+        
         data = _load_json(ACTIVE_TRIALS_FILE, {})
         data[str(tg_id)] = info
         _save_json(ACTIVE_TRIALS_FILE, data)
-        logger.info(f"set_active_trial: Set active trial for user {tg_id}, total_hours={info.get('total_hours')}")
+        logger.info(f"set_active_trial: Set active trial for user {tg_id}, total_hours={info.get('total_hours')}, signed=True")
 
 
 def clear_active_trial(tg_id: int) -> None:
@@ -221,11 +356,16 @@ def get_invite_info(tg_id: int) -> Optional[Dict[str, Any]]:
 def set_invite_info(tg_id: int, info: Dict[str, Any]) -> None:
     """
     Store or update invite info for a user.
+    Automatically adds HMAC signature to prevent tampering.
     """
     with _lock:
+        # Add signature before saving
+        info["signature"] = _sign_invite_data(info, tg_id)
+        
         data = _load_json(INVITES_FILE, {})
         data[str(tg_id)] = info
         _save_json(INVITES_FILE, data)
+        logger.info(f"set_invite_info: Saved invite for user {tg_id}, signed=True")
 
 
 def get_valid_invite_link(tg_id: int, now: datetime) -> Optional[str]:
@@ -240,6 +380,11 @@ def get_valid_invite_link(tg_id: int, now: datetime) -> Optional[str]:
         if not invite_info or "invite_expires_at" not in invite_info:
             return None
         
+        # SECURITY FIX #2: Verify signature first
+        if not _verify_invite_signature(invite_info, tg_id):
+            logger.error(f"Invalid invite signature for user {tg_id}, rejecting")
+            return None
+        
         try:
             expires_at = _parse_iso_to_utc(invite_info["invite_expires_at"])
             # Ensure now is also timezone-aware UTC for comparison
@@ -251,6 +396,66 @@ def get_valid_invite_link(tg_id: int, now: datetime) -> Optional[str]:
             return None
         
         return None
+
+
+def atomic_create_or_get_invite(tg_id: int, link_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Atomically check for existing valid invite OR create new one.
+    Returns {"action": "existing", "link": "..."} or {"action": "created", "link": None}
+    This prevents race condition when multiple requests arrive simultaneously.
+    """
+    with _lock:
+        now = datetime.now(timezone.utc)
+        data = _load_json(INVITES_FILE, {})
+        invite_info = data.get(str(tg_id))
+        
+        # Check if valid invite exists
+        if invite_info and "invite_expires_at" in invite_info:
+            try:
+                expires_at = _parse_iso_to_utc(invite_info["invite_expires_at"])
+                if now < expires_at and invite_info.get("invite_link"):
+                    logger.info(f"atomic_create_or_get_invite: Found existing valid invite for user {tg_id}")
+                    return {"action": "existing", "link": invite_info["invite_link"]}
+            except Exception as e:
+                logger.warning(f"atomic_create_or_get_invite: Error parsing existing invite: {e}")
+        
+        # No valid invite - mark as creating (store temporary placeholder)
+        data[str(tg_id)] = {
+            **link_data,
+            "creating": True,  # Marker to prevent concurrent creation
+            "created_at": now.isoformat()
+        }
+        _save_json(INVITES_FILE, data)
+        logger.info(f"atomic_create_or_get_invite: Marked user {tg_id} as creating new invite")
+        return {"action": "created", "link": None}
+
+
+def finalize_invite_creation(tg_id: int, invite_link: str) -> None:
+    """
+    Finalize invite creation by removing 'creating' marker and adding actual link.
+    Re-signs data with new invite_link.
+    """
+    with _lock:
+        data = _load_json(INVITES_FILE, {})
+        if str(tg_id) in data:
+            data[str(tg_id)]["invite_link"] = invite_link
+            data[str(tg_id)].pop("creating", None)  # Remove marker
+            # Re-sign with the new invite_link
+            data[str(tg_id)]["signature"] = _sign_invite_data(data[str(tg_id)], tg_id)
+            _save_json(INVITES_FILE, data)
+            logger.info(f"finalize_invite_creation: Finalized invite for user {tg_id}")
+
+
+def cleanup_failed_invite_creation(tg_id: int) -> None:
+    """
+    Remove temporary placeholder if invite creation failed.
+    """
+    with _lock:
+        data = _load_json(INVITES_FILE, {})
+        if str(tg_id) in data and data[str(tg_id)].get("creating"):
+            del data[str(tg_id)]
+            _save_json(INVITES_FILE, data)
+            logger.info(f"cleanup_failed_invite_creation: Cleaned up failed creation for user {tg_id}")
 
 
 def check_rate_limit(tg_id: int, action: str, max_attempts: int = 5, window_minutes: int = 15) -> bool:
@@ -360,4 +565,44 @@ def get_all_start_users() -> Dict[str, Any]:
     """
     with _lock:
         return _load_json(START_USERS_CLICKS_FILE, {})
+
+
+# =============================================================================
+# SECURITY FIX #5: Cleanup expired data
+# =============================================================================
+
+PENDING_VERIFICATION_EXPIRY_HOURS = 24  # Expire after 24 hours
+
+def cleanup_expired_pending_verifications() -> int:
+    """
+    Remove pending verifications older than EXPIRY hours.
+    Returns count of entries removed.
+    """
+    with _lock:
+        data = _load_json(PENDING_FILE, {})
+        now = datetime.now(timezone.utc)
+        
+        expired_ids = []
+        for tg_id_str, info in data.items():
+            # Check various timestamp fields
+            verified_at_str = info.get("verified_at") or info.get("ip_check_at")
+            if not verified_at_str:
+                continue
+            
+            try:
+                verified_at = _parse_iso_to_utc(verified_at_str)
+                hours_old = (now - verified_at).total_seconds() / 3600
+                if hours_old > PENDING_VERIFICATION_EXPIRY_HOURS:
+                    expired_ids.append(tg_id_str)
+            except Exception:
+                pass
+        
+        for tg_id_str in expired_ids:
+            del data[tg_id_str]
+        
+        if expired_ids:
+            _save_json(PENDING_FILE, data)
+            logger.info(f"Cleaned up {len(expired_ids)} expired pending verifications")
+        
+        return len(expired_ids)
 

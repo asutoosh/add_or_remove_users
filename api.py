@@ -55,6 +55,12 @@ GIVEAWAY_CHANNEL_URL = os.environ.get("GIVEAWAY_CHANNEL_URL", "https://t.me/Frey
 SUPPORT_CONTACT = os.environ.get("SUPPORT_CONTACT", "@cogitosk")
 INVITE_LINK_EXPIRY_HOURS = int(os.environ.get("INVITE_LINK_EXPIRY_HOURS", "5"))
 
+# SECURITY FIX #6: Warn if API_SECRET not set
+if not API_SECRET:
+    logger.warning(
+        "⚠️ API_SECRET not set! The /api/get-verification endpoint will be publicly accessible."
+    )
+
 # Flask app
 app = Flask(__name__, static_folder='mini_app', static_url_path='')
 
@@ -187,17 +193,28 @@ def validate_init_data(init_data: str) -> Optional[dict]:
             logger.warning("Invalid initData hash")
             return None
         
-        # Check auth_date is not too old (within 24 hours)
+        # Check auth_date is not too old (CRITICAL: Use 5 minutes max per Telegram recommendations)
         auth_date_list = parsed.get("auth_date", [])
         if auth_date_list and auth_date_list[0]:
             try:
                 auth_timestamp = int(auth_date_list[0])
                 now_timestamp = int(_now_utc().timestamp())
-                if now_timestamp - auth_timestamp > 86400:  # 24 hours
-                    logger.warning("initData auth_date too old")
+                time_diff = now_timestamp - auth_timestamp
+                
+                # SECURITY: 5 minutes (300 seconds) max to prevent replay attacks
+                # Telegram recommends this to prevent intercepted initData from being reused
+                if time_diff > 300:
+                    logger.warning(f"initData auth_date too old: {time_diff} seconds (max 300)")
                     return None
-            except ValueError:
-                pass
+                
+                # Also reject future timestamps (clock skew attacks)
+                if time_diff < -60:  # Allow 1 minute clock skew
+                    logger.warning(f"initData auth_date in future: {time_diff} seconds")
+                    return None
+                    
+            except ValueError as e:
+                logger.warning(f"Invalid auth_date format: {e}")
+                return None
         
         # Parse user data
         if "user" in parsed and parsed["user"]:
@@ -251,6 +268,12 @@ def require_telegram_auth(f):
             if not check_ip_rate_limit(ip, max_requests=3, window_minutes=10):
                 logger.warning(f"Rate limited IP {ip} for unauthenticated tg_id access")
                 return jsonify({"error": "Too many requests"}), 429
+        
+        # SECURITY FIX #1: If initData was validated, tg_id MUST match authenticated user
+        if validated_via_init_data and user_data:
+            if tg_id != user_data.get("id"):
+                logger.warning(f"tg_id mismatch: requested={tg_id}, authenticated={user_data.get('id')}")
+                return jsonify({"error": "tg_id does not match authenticated user"}), 403
         
         # Rate limit by tg_id
         if not check_tg_rate_limit(tg_id):
@@ -786,10 +809,19 @@ def trial_page():
     <title>Free Trial Verification</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
+        :root {{
+            --bg-primary: #000000;
+            --bg-card: #1a1a1a;
+            --text-primary: #ffffff;
+            --text-secondary: #9ca3af;
+            --accent-primary: #8b5cf6;
+            --accent-gradient: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%);
+            --border-color: #2a2a2a;
+        }}
         body {{
-            font-family: system-ui, -apple-system, sans-serif;
-            background: #050816;
-            color: #f3f4f6;
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
             display: flex;
             align-items: center;
             justify-content: center;
@@ -798,274 +830,349 @@ def trial_page():
             padding: 16px;
         }}
         .card {{
-            background: #020617;
-            border-radius: 16px;
+            background: var(--bg-card);
+            border-radius: 12px;
             padding: 24px;
             max-width: 420px;
             width: 100%;
-            border: 1px solid rgba(148,163,184,0.4);
+            border: 1px solid var(--border-color);
+            position: relative;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
         }}
-        h2 {{ margin-top: 0; }}
-        form {{ display: flex; flex-direction: column; gap: 12px; }}
+        h2 {{ margin-top: 0; font-size: 1.5rem; margin-bottom: 0.5rem; }}
+        p {{ color: var(--text-secondary); margin-top: 0; margin-bottom: 1.5rem; line-height: 1.5; }}
+        form {{ display: flex; flex-direction: column; gap: 16px; }}
         input, select {{
-            padding: 10px;
+            width: 100%;
+            padding: 14px 16px;
             border-radius: 8px;
-            border: 1px solid #4b5563;
-            background: rgba(15,23,42,0.8);
-            color: #f9fafb;
-            font-size: 1rem;
+            border: 1px solid var(--border-color);
+            background: var(--bg-card);
+            color: var(--text-primary);
+            font-size: 15px;
+            box-sizing: border-box;
+        }}
+        input:focus, select:focus {{
+            outline: none;
+            border-color: var(--accent-primary);
         }}
         button {{
-            padding: 12px;
+            padding: 16px;
             border-radius: 999px;
             border: none;
-            background: linear-gradient(135deg, #22c55e, #16a34a);
+            background: var(--accent-gradient);
             color: white;
             font-weight: 600;
+            font-size: 16px;
             cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
         }}
-        .success {{ color: #22c55e; }}
-        .error {{ color: #ef4444; }}
+        button:hover {{
+            transform: translateY(-2px);
+            box-shadow: 0 8px 24px rgba(139, 92, 246, 0.4);
+        }}
+        button:disabled {{
+            opacity: 0.7;
+            transform: none;
+            cursor: wait;
+        }}
+        .hidden {{ display: none !important; }}
+        .success-modal {{
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: var(--bg-card);
+            border-radius: 12px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            z-index: 10;
+        }}
+        .success-icon {{ font-size: 3rem; margin-bottom: 1rem; }}
+        .spinner {{
+            width: 32px;
+            height: 32px;
+            border: 3px solid var(--border-color);
+            border-top-color: var(--accent-primary);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin: 1.5rem auto;
+        }}
+        @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
+        .error {{ color: #ef4444; font-size: 0.9rem; margin-top: 0.5rem; }}
     </style>
 </head>
 <body>
     <div class="card">
-        <h2>Free Trial Verification</h2>
-        <p>Complete this form to verify your eligibility.</p>
-        <form id="vform">
-            <input type="hidden" id="tg_id" value="{tg_id}">
-            <input type="text" id="name" placeholder="Your Name" required>
-            <select id="country" required>
-                <option value="">Select Country</option>
-                <option value="Afghanistan">Afghanistan</option>
-                <option value="Albania">Albania</option>
-                <option value="Algeria">Algeria</option>
-                <option value="Andorra">Andorra</option>
-                <option value="Angola">Angola</option>
-                <option value="Antigua and Barbuda">Antigua and Barbuda</option>
-                <option value="Argentina">Argentina</option>
-                <option value="Armenia">Armenia</option>
-                <option value="Australia">Australia</option>
-                <option value="Austria">Austria</option>
-                <option value="Azerbaijan">Azerbaijan</option>
-                <option value="Bahamas">Bahamas</option>
-                <option value="Bahrain">Bahrain</option>
-                <option value="Bangladesh">Bangladesh</option>
-                <option value="Barbados">Barbados</option>
-                <option value="Belarus">Belarus</option>
-                <option value="Belgium">Belgium</option>
-                <option value="Belize">Belize</option>
-                <option value="Benin">Benin</option>
-                <option value="Bhutan">Bhutan</option>
-                <option value="Bolivia">Bolivia</option>
-                <option value="Bosnia and Herzegovina">Bosnia and Herzegovina</option>
-                <option value="Botswana">Botswana</option>
-                <option value="Brazil">Brazil</option>
-                <option value="Brunei">Brunei</option>
-                <option value="Bulgaria">Bulgaria</option>
-                <option value="Burkina Faso">Burkina Faso</option>
-                <option value="Burundi">Burundi</option>
-                <option value="Cambodia">Cambodia</option>
-                <option value="Cameroon">Cameroon</option>
-                <option value="Canada">Canada</option>
-                <option value="Cape Verde">Cape Verde</option>
-                <option value="Central African Republic">Central African Republic</option>
-                <option value="Chad">Chad</option>
-                <option value="Chile">Chile</option>
-                <option value="China">China</option>
-                <option value="Colombia">Colombia</option>
-                <option value="Comoros">Comoros</option>
-                <option value="Congo">Congo</option>
-                <option value="Costa Rica">Costa Rica</option>
-                <option value="Croatia">Croatia</option>
-                <option value="Cuba">Cuba</option>
-                <option value="Cyprus">Cyprus</option>
-                <option value="Czech Republic">Czech Republic</option>
-                <option value="Denmark">Denmark</option>
-                <option value="Djibouti">Djibouti</option>
-                <option value="Dominica">Dominica</option>
-                <option value="Dominican Republic">Dominican Republic</option>
-                <option value="East Timor">East Timor</option>
-                <option value="Ecuador">Ecuador</option>
-                <option value="Egypt">Egypt</option>
-                <option value="El Salvador">El Salvador</option>
-                <option value="Equatorial Guinea">Equatorial Guinea</option>
-                <option value="Eritrea">Eritrea</option>
-                <option value="Estonia">Estonia</option>
-                <option value="Eswatini">Eswatini</option>
-                <option value="Ethiopia">Ethiopia</option>
-                <option value="Fiji">Fiji</option>
-                <option value="Finland">Finland</option>
-                <option value="France">France</option>
-                <option value="Gabon">Gabon</option>
-                <option value="Gambia">Gambia</option>
-                <option value="Georgia">Georgia</option>
-                <option value="Germany">Germany</option>
-                <option value="Ghana">Ghana</option>
-                <option value="Greece">Greece</option>
-                <option value="Grenada">Grenada</option>
-                <option value="Guatemala">Guatemala</option>
-                <option value="Guinea">Guinea</option>
-                <option value="Guinea-Bissau">Guinea-Bissau</option>
-                <option value="Guyana">Guyana</option>
-                <option value="Haiti">Haiti</option>
-                <option value="Honduras">Honduras</option>
-                <option value="Hungary">Hungary</option>
-                <option value="Iceland">Iceland</option>
-                <option value="India">India</option>
-                <option value="Indonesia">Indonesia</option>
-                <option value="Iran">Iran</option>
-                <option value="Iraq">Iraq</option>
-                <option value="Ireland">Ireland</option>
-                <option value="Israel">Israel</option>
-                <option value="Italy">Italy</option>
-                <option value="Ivory Coast">Ivory Coast</option>
-                <option value="Jamaica">Jamaica</option>
-                <option value="Japan">Japan</option>
-                <option value="Jordan">Jordan</option>
-                <option value="Kazakhstan">Kazakhstan</option>
-                <option value="Kenya">Kenya</option>
-                <option value="Kiribati">Kiribati</option>
-                <option value="Kuwait">Kuwait</option>
-                <option value="Kyrgyzstan">Kyrgyzstan</option>
-                <option value="Laos">Laos</option>
-                <option value="Latvia">Latvia</option>
-                <option value="Lebanon">Lebanon</option>
-                <option value="Lesotho">Lesotho</option>
-                <option value="Liberia">Liberia</option>
-                <option value="Libya">Libya</option>
-                <option value="Liechtenstein">Liechtenstein</option>
-                <option value="Lithuania">Lithuania</option>
-                <option value="Luxembourg">Luxembourg</option>
-                <option value="Madagascar">Madagascar</option>
-                <option value="Malawi">Malawi</option>
-                <option value="Malaysia">Malaysia</option>
-                <option value="Maldives">Maldives</option>
-                <option value="Mali">Mali</option>
-                <option value="Malta">Malta</option>
-                <option value="Marshall Islands">Marshall Islands</option>
-                <option value="Mauritania">Mauritania</option>
-                <option value="Mauritius">Mauritius</option>
-                <option value="Mexico">Mexico</option>
-                <option value="Micronesia">Micronesia</option>
-                <option value="Moldova">Moldova</option>
-                <option value="Monaco">Monaco</option>
-                <option value="Mongolia">Mongolia</option>
-                <option value="Montenegro">Montenegro</option>
-                <option value="Morocco">Morocco</option>
-                <option value="Mozambique">Mozambique</option>
-                <option value="Myanmar">Myanmar</option>
-                <option value="Namibia">Namibia</option>
-                <option value="Nauru">Nauru</option>
-                <option value="Nepal">Nepal</option>
-                <option value="Netherlands">Netherlands</option>
-                <option value="New Zealand">New Zealand</option>
-                <option value="Nicaragua">Nicaragua</option>
-                <option value="Niger">Niger</option>
-                <option value="Nigeria">Nigeria</option>
-                <option value="North Korea">North Korea</option>
-                <option value="North Macedonia">North Macedonia</option>
-                <option value="Norway">Norway</option>
-                <option value="Oman">Oman</option>
-                <option value="Pakistan">Pakistan</option>
-                <option value="Palau">Palau</option>
-                <option value="Palestine">Palestine</option>
-                <option value="Panama">Panama</option>
-                <option value="Papua New Guinea">Papua New Guinea</option>
-                <option value="Paraguay">Paraguay</option>
-                <option value="Peru">Peru</option>
-                <option value="Philippines">Philippines</option>
-                <option value="Poland">Poland</option>
-                <option value="Portugal">Portugal</option>
-                <option value="Qatar">Qatar</option>
-                <option value="Romania">Romania</option>
-                <option value="Russia">Russia</option>
-                <option value="Rwanda">Rwanda</option>
-                <option value="Saint Kitts and Nevis">Saint Kitts and Nevis</option>
-                <option value="Saint Lucia">Saint Lucia</option>
-                <option value="Saint Vincent and the Grenadines">Saint Vincent and the Grenadines</option>
-                <option value="Samoa">Samoa</option>
-                <option value="San Marino">San Marino</option>
-                <option value="Sao Tome and Principe">Sao Tome and Principe</option>
-                <option value="Saudi Arabia">Saudi Arabia</option>
-                <option value="Senegal">Senegal</option>
-                <option value="Serbia">Serbia</option>
-                <option value="Seychelles">Seychelles</option>
-                <option value="Sierra Leone">Sierra Leone</option>
-                <option value="Singapore">Singapore</option>
-                <option value="Slovakia">Slovakia</option>
-                <option value="Slovenia">Slovenia</option>
-                <option value="Solomon Islands">Solomon Islands</option>
-                <option value="Somalia">Somalia</option>
-                <option value="South Africa">South Africa</option>
-                <option value="South Korea">South Korea</option>
-                <option value="South Sudan">South Sudan</option>
-                <option value="Spain">Spain</option>
-                <option value="Sri Lanka">Sri Lanka</option>
-                <option value="Sudan">Sudan</option>
-                <option value="Suriname">Suriname</option>
-                <option value="Sweden">Sweden</option>
-                <option value="Switzerland">Switzerland</option>
-                <option value="Syria">Syria</option>
-                <option value="Taiwan">Taiwan</option>
-                <option value="Tajikistan">Tajikistan</option>
-                <option value="Tanzania">Tanzania</option>
-                <option value="Thailand">Thailand</option>
-                <option value="Togo">Togo</option>
-                <option value="Tonga">Tonga</option>
-                <option value="Trinidad and Tobago">Trinidad and Tobago</option>
-                <option value="Tunisia">Tunisia</option>
-                <option value="Turkey">Turkey</option>
-                <option value="Turkmenistan">Turkmenistan</option>
-                <option value="Tuvalu">Tuvalu</option>
-                <option value="Uganda">Uganda</option>
-                <option value="Ukraine">Ukraine</option>
-                <option value="United Arab Emirates">United Arab Emirates</option>
-                <option value="United Kingdom">United Kingdom</option>
-                <option value="United States">United States</option>
-                <option value="Uruguay">Uruguay</option>
-                <option value="Uzbekistan">Uzbekistan</option>
-                <option value="Vanuatu">Vanuatu</option>
-                <option value="Vatican City">Vatican City</option>
-                <option value="Venezuela">Venezuela</option>
-                <option value="Vietnam">Vietnam</option>
-                <option value="Yemen">Yemen</option>
-                <option value="Zambia">Zambia</option>
-                <option value="Zimbabwe">Zimbabwe</option>
-                <option value="Other">Other</option>
-            </select>
-            <input type="email" id="email" placeholder="Email (optional)">
-            <button type="submit">Complete Verification</button>
-            <div id="msg"></div>
-        </form>
+        <div id="form-content">
+            <h2>Free Trial Verification</h2>
+            <p>Complete this form to verify your eligibility.</p>
+            <form id="vform">
+                <input type="hidden" id="tg_id" value="{tg_id}">
+                <input type="text" id="name" placeholder="Your Name" required>
+                <select id="country" required>
+                    <option value="">Select Country</option>
+                    <option value="Afghanistan">Afghanistan</option>
+                    <option value="Albania">Albania</option>
+                    <option value="Algeria">Algeria</option>
+                    <option value="Andorra">Andorra</option>
+                    <option value="Angola">Angola</option>
+                    <option value="Antigua and Barbuda">Antigua and Barbuda</option>
+                    <option value="Argentina">Argentina</option>
+                    <option value="Armenia">Armenia</option>
+                    <option value="Australia">Australia</option>
+                    <option value="Austria">Austria</option>
+                    <option value="Azerbaijan">Azerbaijan</option>
+                    <option value="Bahamas">Bahamas</option>
+                    <option value="Bahrain">Bahrain</option>
+                    <option value="Bangladesh">Bangladesh</option>
+                    <option value="Barbados">Barbados</option>
+                    <option value="Belarus">Belarus</option>
+                    <option value="Belgium">Belgium</option>
+                    <option value="Belize">Belize</option>
+                    <option value="Benin">Benin</option>
+                    <option value="Bhutan">Bhutan</option>
+                    <option value="Bolivia">Bolivia</option>
+                    <option value="Bosnia and Herzegovina">Bosnia and Herzegovina</option>
+                    <option value="Botswana">Botswana</option>
+                    <option value="Brazil">Brazil</option>
+                    <option value="Brunei">Brunei</option>
+                    <option value="Bulgaria">Bulgaria</option>
+                    <option value="Burkina Faso">Burkina Faso</option>
+                    <option value="Burundi">Burundi</option>
+                    <option value="Cambodia">Cambodia</option>
+                    <option value="Cameroon">Cameroon</option>
+                    <option value="Canada">Canada</option>
+                    <option value="Cape Verde">Cape Verde</option>
+                    <option value="Central African Republic">Central African Republic</option>
+                    <option value="Chad">Chad</option>
+                    <option value="Chile">Chile</option>
+                    <option value="China">China</option>
+                    <option value="Colombia">Colombia</option>
+                    <option value="Comoros">Comoros</option>
+                    <option value="Congo">Congo</option>
+                    <option value="Costa Rica">Costa Rica</option>
+                    <option value="Croatia">Croatia</option>
+                    <option value="Cuba">Cuba</option>
+                    <option value="Cyprus">Cyprus</option>
+                    <option value="Czech Republic">Czech Republic</option>
+                    <option value="Denmark">Denmark</option>
+                    <option value="Djibouti">Djibouti</option>
+                    <option value="Dominica">Dominica</option>
+                    <option value="Dominican Republic">Dominican Republic</option>
+                    <option value="East Timor">East Timor</option>
+                    <option value="Ecuador">Ecuador</option>
+                    <option value="Egypt">Egypt</option>
+                    <option value="El Salvador">El Salvador</option>
+                    <option value="Equatorial Guinea">Equatorial Guinea</option>
+                    <option value="Eritrea">Eritrea</option>
+                    <option value="Estonia">Estonia</option>
+                    <option value="Eswatini">Eswatini</option>
+                    <option value="Ethiopia">Ethiopia</option>
+                    <option value="Fiji">Fiji</option>
+                    <option value="Finland">Finland</option>
+                    <option value="France">France</option>
+                    <option value="Gabon">Gabon</option>
+                    <option value="Gambia">Gambia</option>
+                    <option value="Georgia">Georgia</option>
+                    <option value="Germany">Germany</option>
+                    <option value="Ghana">Ghana</option>
+                    <option value="Greece">Greece</option>
+                    <option value="Grenada">Grenada</option>
+                    <option value="Guatemala">Guatemala</option>
+                    <option value="Guinea">Guinea</option>
+                    <option value="Guinea-Bissau">Guinea-Bissau</option>
+                    <option value="Guyana">Guyana</option>
+                    <option value="Haiti">Haiti</option>
+                    <option value="Honduras">Honduras</option>
+                    <option value="Hungary">Hungary</option>
+                    <option value="Iceland">Iceland</option>
+                    <option value="India">India</option>
+                    <option value="Indonesia">Indonesia</option>
+                    <option value="Iran">Iran</option>
+                    <option value="Iraq">Iraq</option>
+                    <option value="Ireland">Ireland</option>
+                    <option value="Israel">Israel</option>
+                    <option value="Italy">Italy</option>
+                    <option value="Ivory Coast">Ivory Coast</option>
+                    <option value="Jamaica">Jamaica</option>
+                    <option value="Japan">Japan</option>
+                    <option value="Jordan">Jordan</option>
+                    <option value="Kazakhstan">Kazakhstan</option>
+                    <option value="Kenya">Kenya</option>
+                    <option value="Kiribati">Kiribati</option>
+                    <option value="Kuwait">Kuwait</option>
+                    <option value="Kyrgyzstan">Kyrgyzstan</option>
+                    <option value="Laos">Laos</option>
+                    <option value="Latvia">Latvia</option>
+                    <option value="Lebanon">Lebanon</option>
+                    <option value="Lesotho">Lesotho</option>
+                    <option value="Liberia">Liberia</option>
+                    <option value="Libya">Libya</option>
+                    <option value="Liechtenstein">Liechtenstein</option>
+                    <option value="Lithuania">Lithuania</option>
+                    <option value="Luxembourg">Luxembourg</option>
+                    <option value="Madagascar">Madagascar</option>
+                    <option value="Malawi">Malawi</option>
+                    <option value="Malaysia">Malaysia</option>
+                    <option value="Maldives">Maldives</option>
+                    <option value="Mali">Mali</option>
+                    <option value="Malta">Malta</option>
+                    <option value="Marshall Islands">Marshall Islands</option>
+                    <option value="Mauritania">Mauritania</option>
+                    <option value="Mauritius">Mauritius</option>
+                    <option value="Mexico">Mexico</option>
+                    <option value="Micronesia">Micronesia</option>
+                    <option value="Moldova">Moldova</option>
+                    <option value="Monaco">Monaco</option>
+                    <option value="Mongolia">Mongolia</option>
+                    <option value="Montenegro">Montenegro</option>
+                    <option value="Morocco">Morocco</option>
+                    <option value="Mozambique">Mozambique</option>
+                    <option value="Myanmar">Myanmar</option>
+                    <option value="Namibia">Namibia</option>
+                    <option value="Nauru">Nauru</option>
+                    <option value="Nepal">Nepal</option>
+                    <option value="Netherlands">Netherlands</option>
+                    <option value="New Zealand">New Zealand</option>
+                    <option value="Nicaragua">Nicaragua</option>
+                    <option value="Niger">Niger</option>
+                    <option value="Nigeria">Nigeria</option>
+                    <option value="North Korea">North Korea</option>
+                    <option value="North Macedonia">North Macedonia</option>
+                    <option value="Norway">Norway</option>
+                    <option value="Oman">Oman</option>
+                    <option value="Pakistan">Pakistan</option>
+                    <option value="Palau">Palau</option>
+                    <option value="Palestine">Palestine</option>
+                    <option value="Panama">Panama</option>
+                    <option value="Papua New Guinea">Papua New Guinea</option>
+                    <option value="Paraguay">Paraguay</option>
+                    <option value="Peru">Peru</option>
+                    <option value="Philippines">Philippines</option>
+                    <option value="Poland">Poland</option>
+                    <option value="Portugal">Portugal</option>
+                    <option value="Qatar">Qatar</option>
+                    <option value="Romania">Romania</option>
+                    <option value="Russia">Russia</option>
+                    <option value="Rwanda">Rwanda</option>
+                    <option value="Saint Kitts and Nevis">Saint Kitts and Nevis</option>
+                    <option value="Saint Lucia">Saint Lucia</option>
+                    <option value="Saint Vincent and the Grenadines">Saint Vincent and the Grenadines</option>
+                    <option value="Samoa">Samoa</option>
+                    <option value="San Marino">San Marino</option>
+                    <option value="Sao Tome and Principe">Sao Tome and Principe</option>
+                    <option value="Saudi Arabia">Saudi Arabia</option>
+                    <option value="Senegal">Senegal</option>
+                    <option value="Serbia">Serbia</option>
+                    <option value="Seychelles">Seychelles</option>
+                    <option value="Sierra Leone">Sierra Leone</option>
+                    <option value="Singapore">Singapore</option>
+                    <option value="Slovakia">Slovakia</option>
+                    <option value="Slovenia">Slovenia</option>
+                    <option value="Solomon Islands">Solomon Islands</option>
+                    <option value="Somalia">Somalia</option>
+                    <option value="South Africa">South Africa</option>
+                    <option value="South Korea">South Korea</option>
+                    <option value="South Sudan">South Sudan</option>
+                    <option value="Spain">Spain</option>
+                    <option value="Sri Lanka">Sri Lanka</option>
+                    <option value="Sudan">Sudan</option>
+                    <option value="Suriname">Suriname</option>
+                    <option value="Sweden">Sweden</option>
+                    <option value="Switzerland">Switzerland</option>
+                    <option value="Syria">Syria</option>
+                    <option value="Taiwan">Taiwan</option>
+                    <option value="Tajikistan">Tajikistan</option>
+                    <option value="Tanzania">Tanzania</option>
+                    <option value="Thailand">Thailand</option>
+                    <option value="Togo">Togo</option>
+                    <option value="Trinidad and Tobago">Trinidad and Tobago</option>
+                    <option value="Tunisia">Tunisia</option>
+                    <option value="Turkey">Turkey</option>
+                    <option value="Turkmenistan">Turkmenistan</option>
+                    <option value="Tuvalu">Tuvalu</option>
+                    <option value="Uganda">Uganda</option>
+                    <option value="Ukraine">Ukraine</option>
+                    <option value="United Arab Emirates">United Arab Emirates</option>
+                    <option value="United Kingdom">United Kingdom</option>
+                    <option value="United States">United States</option>
+                    <option value="Uruguay">Uruguay</option>
+                    <option value="Uzbekistan">Uzbekistan</option>
+                    <option value="Vanuatu">Vanuatu</option>
+                    <option value="Vatican City">Vatican City</option>
+                    <option value="Venezuela">Venezuela</option>
+                    <option value="Vietnam">Vietnam</option>
+                    <option value="Yemen">Yemen</option>
+                    <option value="Zambia">Zambia</option>
+                    <option value="Zimbabwe">Zimbabwe</option>
+                    <option value="Other">Other</option>
+                </select>
+                <input type="email" id="email" placeholder="Email (optional)">
+                <button type="submit">Complete Verification</button>
+                <div id="msg"></div>
+            </form>
+        </div>
+
+        <!-- Success Modal (Initially Hidden) -->
+        <div id="success-modal" class="success-modal hidden">
+            <div class="success-icon">✨</div>
+            <h2>Info Collected!</h2>
+            <p>Your details have been saved.</p>
+            <div class="spinner"></div>
+            <p style="color: #9ca3af; font-size: 0.9rem;">Redirecting to Telegram...</p>
+        </div>
     </div>
     <script>
         document.getElementById('vform').onsubmit = async function(e) {{
             e.preventDefault();
             const msg = document.getElementById('msg');
+            const submitBtn = this.querySelector('button[type="submit"]');
+            const formContent = document.getElementById('form-content');
+            const successModal = document.getElementById('success-modal');
+            
             const tg_id = document.getElementById('tg_id').value;
             const name = document.getElementById('name').value;
             const country = document.getElementById('country').value;
             const email = document.getElementById('email').value;
             
+            msg.textContent = 'Verifying...';
+            msg.className = '';
+            submitBtn.disabled = true;
+            submitBtn.style.opacity = '0.7';
+
             try {{
-                // Store verification directly via storage
                 const resp = await fetch('/api/fallback/verify', {{
                     method: 'POST',
                     headers: {{'Content-Type': 'application/json'}},
                     body: JSON.stringify({{tg_id, name, country, email}})
                 }});
                 const data = await resp.json();
+                
                 if (data.success) {{
-                    msg.className = 'success';
-                    msg.innerHTML = '✅ Verification complete! Return to Telegram and tap "Done - Continue".';
+                    // Show success modal
+                    formContent.classList.add('hidden');
+                    successModal.classList.remove('hidden');
+                    
+                    // Redirect to bot after 2 seconds
+                    setTimeout(() => {{
+                        window.location.href = "https://t.me/Letttttmeeeeeeiiiiiiinbot";
+                    }}, 2000);
                 }} else {{
                     msg.className = 'error';
                     msg.textContent = data.error || 'Error. Please try again.';
+                    submitBtn.disabled = false;
+                    submitBtn.style.opacity = '1';
                 }}
             }} catch(err) {{
                 msg.className = 'error';
                 msg.textContent = 'Network error. Please try again.';
+                submitBtn.disabled = false;
+                submitBtn.style.opacity = '1';
             }}
         }};
     </script>
@@ -1082,8 +1189,50 @@ def api_fallback_verify():
     Simple fallback verification for non-Mini App clients.
     Stores step1_ok without requiring Telegram auth (uses tg_id from form).
     
-    SECURITY: Rate limited by IP to prevent abuse.
+    SECURITY: 
+    - Rate limited by IP to prevent abuse
+    - Origin validated to prevent CSRF
+    - Input sanitized to prevent XSS
     """
+    # SECURITY: Validate request origin to prevent CSRF attacks
+    origin = request.headers.get("Origin", "").lower()
+    referer = request.headers.get("Referer", "").lower()
+    
+    # Get base URL from environment
+    base_url = os.environ.get("BASE_URL", "").lower().rstrip("/")
+    
+    # Allowed origins: our domain + Telegram web
+    allowed_origins = [
+        base_url,
+        "https://web.telegram.org",
+        "https://t.me",
+    ]
+    
+    # Check if request comes from allowed origin
+    is_valid_origin = False
+    for allowed in allowed_origins:
+        if allowed and (origin.startswith(allowed) or referer.startswith(allowed)):
+            is_valid_origin = True
+            break
+    
+    # Also allow if no origin (direct API calls for testing)
+    # But only if coming from localhost
+    if not is_valid_origin and not origin and not referer:
+        client_ip = get_client_ip()
+        if client_ip in ["127.0.0.1", "::1", "localhost"]:
+            is_valid_origin = True
+            logger.info("Allowing fallback verify from localhost with no origin")
+    
+    if not is_valid_origin:
+        logger.warning(
+            f"CSRF attempt blocked: origin={origin or 'none'}, referer={referer or 'none'}, "
+            f"ip={get_client_ip()}"
+        )
+        return jsonify({
+            "success": False, 
+            "error": "Invalid request origin. Please use the official verification page."
+        }), 403
+    
     # SECURITY: Strict IP-based rate limiting to prevent abuse
     ip = get_client_ip()
     if not check_ip_rate_limit(ip, max_requests=3, window_minutes=30):
@@ -1185,27 +1334,47 @@ def api_get_verification():
     API endpoint for bot to fetch verification data.
     Allows bot to check if user passed web verification.
     
-    SECURITY: Always requires API_SECRET to prevent unauthorized access.
+    SECURITY: Always requires API_SECRET with constant-time comparison.
     """
     # SECURITY: Always require API secret - no empty bypass
     api_secret = os.environ.get("API_SECRET", "")
-    if not api_secret:
-        logger.error("API_SECRET not configured - /api/get-verification blocked")
+    if not api_secret or len(api_secret) < 32:
+        logger.error("API_SECRET not configured or too short - /api/get-verification blocked")
         return jsonify({"error": "Server configuration error"}), 500
     
-    provided = request.headers.get("X-API-Secret") or request.args.get("secret")
-    if not provided or provided != api_secret:
+    # SECURITY: ONLY accept header (never query param to avoid logging secrets)
+    provided = request.headers.get("X-API-Secret")
+    
+    # Rate limit failed auth attempts
+    ip = get_client_ip()
+    
+    if not provided:
+        if not check_ip_rate_limit(ip, max_requests=5, window_minutes=15):
+            logger.warning(f"Rate limited IP {ip} for missing API secret")
+            return jsonify({"error": "Too many requests"}), 429
+        logger.warning(f"Missing API secret from IP {ip}")
         return jsonify({"error": "Unauthorized"}), 401
     
+    # SECURITY: Use constant-time comparison to prevent timing attacks
+    import hmac
+    if not hmac.compare_digest(provided.encode(), api_secret.encode()):
+        if not check_ip_rate_limit(ip, max_requests=3, window_minutes=15):
+            logger.warning(f"Rate limited IP {ip} for invalid API secret")
+            return jsonify({"error": "Too many requests"}), 429
+        logger.warning(f"Invalid API secret from IP {ip}")
+        return jsonify({"error": "Unauthorized"}), 401
+    
+    # Validate tg_id parameter
     tg_id_str = request.args.get("tg_id")
     if not tg_id_str or not tg_id_str.isdigit():
         return jsonify({"error": "Invalid tg_id"}), 400
     
-    # SECURITY: Validate tg_id range
+    # SECURITY: Validate tg_id range to prevent overflow
     tg_id = int(tg_id_str)
     if tg_id <= 0 or tg_id > 9999999999999:
         return jsonify({"error": "Invalid tg_id"}), 400
     
+    # Fetch and return data
     data = get_pending_verification(tg_id)
     if data:
         return jsonify({"success": True, "data": data})

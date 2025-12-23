@@ -30,10 +30,10 @@ Thumbs.db
 *.log
 
 # Deployment guides (not needed in repo)
+
+*.md
 *DEPLOYMENT*.md
 *deployment*.md
 deployment guide.md
 RENDER_DEPLOYMENT.md
-*.md
-md/
 .cursor/
