@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
+    CallbackQueryHandler,
     ChatMemberHandler,
     CommandHandler,
     ContextTypes,
@@ -112,24 +113,56 @@ def _is_weekend(dt: datetime) -> bool:
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /start command - show Mini App button."""
+    """Handle /start command - show Mini App button with fallback for other clients."""
     user = update.effective_user
     if not user:
         return
     
-    keyboard = [[
-        InlineKeyboardButton(
+    # Check if user already used trial
+    if has_used_trial(user.id):
+        await update.message.reply_text(
+            "You have already used your free trial.\n\n"
+            f"🎁 Join giveaways: {GIVEAWAY_CHANNEL_URL}\n"
+            f"💬 Upgrade: {SUPPORT_CONTACT}",
+        )
+        return
+    
+    # Check if user has active trial
+    active = get_active_trial(user.id)
+    if active and "trial_end_at" in active:
+        try:
+            end_at = _parse_iso_to_utc(active["trial_end_at"])
+            if _now_utc() < end_at:
+                remaining = (end_at - _now_utc()).total_seconds() / 3600
+                await update.message.reply_text(
+                    f"✅ You have an active trial!\n\n"
+                    f"⏳ Time remaining: {remaining:.1f} hours\n\n"
+                    f"💬 Questions? DM {SUPPORT_CONTACT}",
+                )
+                return
+        except Exception:
+            pass
+    
+    # Dual-mode keyboard:
+    # Row 1: Mini App button (for official Telegram clients)
+    # Row 2: Fallback callback button (for Telegram X and other clients)
+    keyboard = [
+        [InlineKeyboardButton(
             text="🚀 Start Free Trial",
             web_app=WebAppInfo(url=BASE_URL)
-        )
-    ]]
+        )],
+        [InlineKeyboardButton(
+            text="📱 Not working? Tap here",
+            callback_data="start_trial_fallback"
+        )]
+    ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await update.message.reply_text(
         f"Hey {user.first_name}! 👋\n\n"
         "Welcome to **Freya Quinn's Flirty Profits**! 💋\n\n"
         "Get a FREE 3-Day Trial of my VIP signals.\n\n"
-        "Tap the button below to start:\n",
+        "Tap the button below to start:",
         reply_markup=reply_markup,
         parse_mode="Markdown"
     )
@@ -200,6 +233,129 @@ async def cmd_support(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         "We typically respond within 24 hours!",
         parse_mode="Markdown"
     )
+
+
+# =============================================================================
+# Callback Handlers (Fallback workflow for non-Mini App clients)
+# =============================================================================
+
+async def start_trial_fallback_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Fallback for clients that don't support Mini Apps (Telegram X, etc.)."""
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
+    
+    user = query.from_user
+    if not user:
+        return
+    
+    # Check if already used trial
+    if has_used_trial(user.id):
+        await query.edit_message_text(
+            "You have already used your free trial.\n\n"
+            f"🎁 Join giveaways: {GIVEAWAY_CHANNEL_URL}\n"
+            f"💬 Upgrade: {SUPPORT_CONTACT}",
+        )
+        return
+    
+    # Build verification URL (regular URL, not WebApp)
+    trial_url = f"{BASE_URL.rstrip('/')}/trial?tg_id={user.id}"
+    
+    keyboard = [
+        [InlineKeyboardButton("🌐 Open Verification Page", url=trial_url)],
+        [InlineKeyboardButton("✅ Done - Continue", callback_data="continue_verification")]
+    ]
+    
+    await query.edit_message_text(
+        "📱 **Alternative Verification**\n\n"
+        "Your app doesn't support Mini Apps. No problem!\n\n"
+        "**Step 1:** Tap the button below to open the verification page in your browser.\n\n"
+        "**Step 2:** Complete the verification on the page.\n\n"
+        "**Step 3:** Come back and tap 'Done - Continue'.",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
+
+
+async def continue_verification_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle continue verification after web step."""
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
+    
+    user = query.from_user
+    if not user:
+        return
+    
+    # Try to fetch verification data from API
+    import aiohttp
+    data = None
+    
+    try:
+        api_url = f"{BASE_URL.rstrip('/')}/api/get-verification?tg_id={user.id}"
+        headers = {}
+        api_secret = os.environ.get("API_SECRET", "")
+        if api_secret:
+            headers["X-API-Secret"] = api_secret
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.get(api_url, headers=headers, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                if resp.status == 200:
+                    result = await resp.json()
+                    if result.get("success") and result.get("data"):
+                        data = result["data"]
+    except Exception as e:
+        logger.warning(f"Could not fetch verification data: {e}")
+    
+    if not data or not data.get("step1_ok"):
+        await query.edit_message_text(
+            "❌ **Verification not found**\n\n"
+            "Please complete the web verification first:\n\n"
+            "1. Open the verification page\n"
+            "2. Turn off VPN/Proxy\n"
+            "3. Fill in your details\n"
+            "4. Submit the form\n"
+            "5. Come back and try again\n\n"
+            "Use /start to try again.",
+            parse_mode="Markdown"
+        )
+        return
+    
+    # Verification passed! Generate invite link
+    try:
+        now = _now_utc()
+        if _is_weekend(now):
+            trial_days = 5
+            total_hours = TRIAL_HOURS_5_DAY
+        else:
+            trial_days = 3
+            total_hours = TRIAL_HOURS_3_DAY
+        
+        # Create invite link
+        invite_link = await context.bot.create_chat_invite_link(
+            chat_id=TRIAL_CHANNEL_ID,
+            member_limit=1,
+            expire_date=now + timedelta(hours=5),
+        )
+        
+        await query.edit_message_text(
+            f"✅ **Verification Passed!**\n\n"
+            f"🎁 Your {trial_days}-day trial is ready!\n\n"
+            f"Tap below to join:\n{invite_link.invite_link}\n\n"
+            f"⚠️ Link expires in 5 hours.",
+            parse_mode="Markdown"
+        )
+        
+        logger.info(f"Generated fallback invite for user {user.id}")
+        
+    except Exception as e:
+        logger.error(f"Failed to generate invite: {e}")
+        await query.edit_message_text(
+            "❌ Error generating invite link.\n\n"
+            f"Please contact {SUPPORT_CONTACT} for help.",
+        )
 
 
 # =============================================================================
@@ -605,14 +761,18 @@ def main():
     application.add_handler(CommandHandler("about", cmd_about))
     application.add_handler(CommandHandler("support", cmd_support))
     
+    # Add callback handlers (for fallback workflow buttons)
+    application.add_handler(CallbackQueryHandler(start_trial_fallback_callback, pattern="^start_trial_fallback$"))
+    application.add_handler(CallbackQueryHandler(continue_verification_callback, pattern="^continue_verification$"))
+    
     # Add chat member handler
     application.add_handler(
         ChatMemberHandler(trial_chat_member_update, ChatMemberHandler.CHAT_MEMBER)
     )
     
-    # Start polling - include 'message' for commands and 'chat_member' for join/leave
-    allowed_updates = ["message", "chat_member"]
-    logger.info("Starting slim bot with command handlers...")
+    # Start polling - include 'message' for commands, 'callback_query' for buttons, 'chat_member' for join/leave
+    allowed_updates = ["message", "callback_query", "chat_member"]
+    logger.info("Starting slim bot with command and callback handlers...")
     application.run_polling(allowed_updates=allowed_updates)
 
 
