@@ -120,7 +120,7 @@ def format_message(text: str) -> str:
     Format message with borders to make it less texty.
     Adds separator lines before and after the message.
     """
-    border = "━" * 30
+    border = "🔹" + "▬" * 28 + "🔹"
     return f"{border}\n\n{text}\n\n{border}"
 
 # Validate required environment variables for production deployment
