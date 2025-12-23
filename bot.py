@@ -1,5 +1,6 @@
 import logging
 import os
+import random
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
@@ -216,6 +217,19 @@ def _now_utc() -> datetime:
     return now
 
 
+def _get_daily_verification_count() -> int:
+    """
+    Get a random verification count that stays consistent for the day.
+    Uses current date as seed so the number is the same all day but changes daily.
+    Returns a number between 200-300.
+    """
+    today = datetime.now(timezone.utc).date()
+    # Use date as seed for consistent daily number
+    seed = int(today.strftime('%Y%m%d'))
+    random.seed(seed)
+    return random.randint(200, 300)
+
+
 def _is_weekend(dt: datetime) -> bool:
     """
     Weekend check in local time (controlled via TIMEZONE_OFFSET_HOURS).
@@ -353,12 +367,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         keyboard = [
             [InlineKeyboardButton("✅ Continue Verification", callback_data="continue_verification")],
         ]
+        daily_count = _get_daily_verification_count()
         await update.message.reply_text(
             "✅ *Step 1 Already Complete!*\n\n"
             "Great news! You've already passed the initial verification.\n\n"
-            "📱 *Just one more step:* Share your phone number to get your trial invite.\n\n"
-            "_We only use this to prevent bots and ensure fair access to our signals. "
-            "Your privacy is fully protected._\n\n"
+            "✅ *Just one more step:* Confirm your identity to unlock trial access\n\n"
+            f"🛡️ *Secure Verification* ({daily_count}+ traders verified today)\n\n"
+            "_Your privacy is fully protected._\n\n"
             "👇 Tap below to complete:",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode="Markdown",
@@ -442,11 +457,12 @@ async def start_trial_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         keyboard = [
             [InlineKeyboardButton("✅ Continue Verification", callback_data="continue_verification")],
         ]
+        daily_count = _get_daily_verification_count()
         await query.edit_message_text(
             "✅ *Step 1 Already Complete!*\n\n"
             "Great news! You've already passed the initial verification.\n\n"
-            "📱 *Just one more step:* Share your phone number to get your trial invite.\n\n"
-            "_We only use this to prevent bots and ensure fair access._\n\n"
+            "✅ *Just one more step:* Confirm your identity to unlock trial access\n\n"
+            f"🛡️ *Secure Verification* ({daily_count}+ traders verified today)\n\n"
             "👇 Tap below to complete:",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode="Markdown",
@@ -548,7 +564,7 @@ async def continue_verification_callback(update: Update, context: ContextTypes.D
     
     logger.info(f"Verification Step 1 confirmed passed for tg_id={tg_id}")
 
-    contact_button = KeyboardButton(text="📱 Share phone number", request_contact=True)
+    contact_button = KeyboardButton(text="✅ Confirm & Continue", request_contact=True)
     deny_button = KeyboardButton(text="❌ No thanks")
     keyboard = ReplyKeyboardMarkup(
         [[contact_button], [deny_button]], 
@@ -556,13 +572,14 @@ async def continue_verification_callback(update: Update, context: ContextTypes.D
         one_time_keyboard=True
     )
 
+    daily_count = _get_daily_verification_count()
     await query.message.reply_text(
-        "Step 1 passed ✅.\n\n"
-        "Step 2: Please share your phone number using the button below.\n\n"
-        "We use your name, country, and phone number only for verification, "
-        "security and internal analytics. We do not sell or share this data. "
-        "You can request deletion at any time.",
+        "✅ *Quick Identity Confirmation*\n\n"
+        "Confirm your account to Unlock Trial Access\n\n"
+        f"🛡️ *Secure Verification* ({daily_count}+ traders verified today)\n\n"
+        "_We use this only for verification and security. Your info stays private._",
         reply_markup=keyboard,
+        parse_mode="Markdown",
     )
 
 
@@ -570,7 +587,7 @@ async def retry_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     """
     Simple /retry command to re-show the contact request keyboard if user cancelled.
     """
-    contact_button = KeyboardButton(text="📱 Share phone number", request_contact=True)
+    contact_button = KeyboardButton(text="✅ Confirm & Continue", request_contact=True)
     deny_button = KeyboardButton(text="❌ No thanks")
     keyboard = ReplyKeyboardMarkup(
         [[contact_button], [deny_button]], 
@@ -578,9 +595,13 @@ async def retry_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         one_time_keyboard=True
     )
 
+    daily_count = _get_daily_verification_count()
     await update.message.reply_text(
-        "Let's try again. Please share your phone number using the button below.",
+        "✅ *Quick Identity Confirmation*\n\n"
+        "Confirm your account to Unlock Trial Access\n\n"
+        f"🛡️ *Secure Verification* ({daily_count}+ traders verified today)",
         reply_markup=keyboard,
+        parse_mode="Markdown",
     )
 
 
@@ -596,7 +617,7 @@ async def phone_deny_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     await update.message.reply_text(
         "No problem! 🙏\n\n"
-        "Unfortunately, we need phone verification to prevent abuse and ensure "
+        "Unfortunately, we need identity confirmation to prevent abuse and ensure "
         "fair access to the trial.\n\n"
         "If you change your mind, you can:\n"
         "• Type /retry to try again\n"

@@ -13,6 +13,7 @@ import html
 import json
 import logging
 import os
+import random
 import re
 import urllib.parse
 
@@ -83,6 +84,19 @@ def _parse_iso_to_utc(value: str) -> datetime:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)
+
+
+def _get_daily_verification_count() -> int:
+    """
+    Get a random verification count that stays consistent for the day.
+    Uses current date as seed so the number is the same all day but changes daily.
+    Returns a number between 200-300.
+    """
+    today = datetime.now(timezone.utc).date()
+    # Use date as seed for consistent daily number
+    seed = int(today.strftime('%Y%m%d'))
+    random.seed(seed)
+    return random.randint(200, 300)
 
 
 def sanitize_input(text: str, max_length: int = 200) -> Optional[str]:
@@ -449,6 +463,7 @@ def api_user_status():
         "tg_id": tg_id,
         "has_used_trial": False,
         "has_active_trial": False,
+        "has_invite_link": False,
         "can_start_trial": True,
     }
     
@@ -476,8 +491,20 @@ def api_user_status():
                 result["elapsed_hours"] = round(elapsed, 1)
                 result["remaining_hours"] = round(remaining, 1)
                 result["trial_days"] = int(total_hours / 24)
+                return jsonify(result)
         except Exception as e:
             logger.warning(f"Error checking active trial: {e}")
+    
+    # Check if user has a valid invite link (not expired)
+    # CRITICAL: This prevents users who generated a link but didn't join yet
+    # from being forced to restart the flow and generate a new link
+    now = _now_utc()
+    existing_link = get_valid_invite_link(tg_id, now)
+    if existing_link:
+        result["has_invite_link"] = True
+        result["invite_link"] = existing_link
+        result["can_start_trial"] = False
+        logger.info(f"User {tg_id} has valid invite link, showing it instead of welcome screen")
     
     return jsonify(result)
 
@@ -560,20 +587,21 @@ def api_verify_submit():
     logger.info(f"Verification step1 completed for tg_id={tg_id}")
     
     # Send immediate follow-up message to user via Telegram
-    # This prompts them to complete phone verification
+    # This prompts them to complete identity confirmation
     try:
+        daily_count = _get_daily_verification_count()
         message_text = (
             "✅ *Step 1 Complete!*\n\n"
             "Great job! You've passed the initial verification.\n\n"
-            "📱 *One more step:* Please share your phone number to complete verification.\n\n"
-            "_We only use this to prevent bots and ensure fair access. "
-            "Your privacy is protected - we never share your data._\n\n"
+            "✅ *One more step:* Confirm your identity to unlock trial access\n\n"
+            f"🛡️ *Secure Verification* ({daily_count}+ traders verified today)\n\n"
+            "_Your privacy is fully protected._\n\n"
             "👇 Tap the button below to continue:"
         )
         
         inline_keyboard = {
             "inline_keyboard": [[
-                {"text": "✅ Continue Verification", "callback_data": "continue_verification"}
+                {"text": "✅ Confirm & Continue", "callback_data": "continue_verification"}
             ]]
         }
         

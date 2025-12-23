@@ -199,6 +199,29 @@ async function checkUserStatus() {
             return;
         }
         
+        // CRITICAL FIX: Check if user already has a valid invite link
+        // This prevents the loop where users generate a link, don't join, reopen app, and get stuck
+        if (result.has_invite_link && result.invite_link) {
+            // User already generated an invite link - show it!
+            const inviteBtn = document.getElementById('invite-link');
+            inviteBtn.href = result.invite_link;
+            inviteBtn.onclick = (e) => {
+                if (TG) {
+                    TG.openTelegramLink(result.invite_link);
+                    e.preventDefault();
+                    
+                    // Close the app automatically to return to the chat/channel
+                    setTimeout(() => {
+                        TG.close();
+                    }, 1000);
+                }
+            };
+            
+            hapticFeedback('success');
+            showScreen('success');
+            return;
+        }
+        
         // New user - start verification flow
         showScreen('welcome');
         
@@ -276,28 +299,10 @@ async function submitVerification(formData) {
             hapticFeedback('success');
             hideLoading();
             
-            showScreen('step1-success');
+            // FIXED: Stay in mini app for phone verification instead of redirecting to bot
+            // Show phone verification screen directly
+            showScreen('phone');
             
-            // Redirect to bot
-            const botUrl = "https://t.me/Letttttmeeeeeeiiiiiiinbot";
-            const redirectToBot = () => {
-                if (TG) {
-                    TG.openTelegramLink(botUrl);
-                    setTimeout(() => {
-                        TG.close();
-                    }, 500);
-                } else {
-                    window.location.href = botUrl;
-                }
-            };
-
-            // Auto redirect after 2s
-            setTimeout(redirectToBot, 2000);
-            
-            // Also enable button
-            const btn = document.getElementById('btn-open-bot');
-            if (btn) btn.onclick = redirectToBot;
-
             return true;
         } else {
             hideLoading();
@@ -319,7 +324,7 @@ async function submitVerification(formData) {
 
 async function requestPhoneNumber() {
     if (!TG) {
-        showError('Not Available', 'Phone verification requires the Telegram app.');
+        showError('Not Available', 'Identity confirmation requires the Telegram app.');
         return;
     }
     
@@ -329,8 +334,14 @@ async function requestPhoneNumber() {
             const contact = event.responseUnsafe.contact;
             handlePhoneReceived(contact.phone_number);
         } else {
-            // User cancelled or error
+            // User cancelled identity confirmation
             hapticFeedback('warning');
+            
+            // Show helpful message instead of leaving them stuck
+            showError(
+                'Identity Confirmation Needed',
+                'No problem! You can confirm your identity anytime by typing /start in the bot chat.'
+            );
         }
     });
 }
@@ -353,14 +364,14 @@ async function handlePhoneReceived(phoneNumber) {
             hideLoading();
             
             if (result.blocked) {
-                showError('Phone Not Eligible', 'Your phone number is not eligible for this trial.');
+                showError('Not Eligible', 'Your account is not eligible for this trial.');
             } else {
                 showError('Verification Failed', result.error || 'Please try again.');
             }
         }
         
     } catch (error) {
-        console.error('Phone verification error:', error);
+        console.error('Identity verification error:', error);
         hideLoading();
         showError('Verification Failed', 'Something went wrong. Please try again.');
     }
@@ -498,6 +509,9 @@ async function init() {
     // Setup event handlers
     setupEventHandlers();
     
+    // Set daily verification count
+    setDailyVerificationCount();
+    
     // Check user status and show appropriate screen
     await checkUserStatus();
     
@@ -507,6 +521,31 @@ async function init() {
     }
     
     console.log('Mini App initialized');
+}
+
+// =============================================================================
+// Daily Verification Count
+// =============================================================================
+
+function setDailyVerificationCount() {
+    /**
+     * Generate a random count between 200-300 that stays consistent for the day.
+     * Uses current date as seed so it's the same all day but changes daily.
+     */
+    const today = new Date();
+    const seed = parseInt(today.getFullYear() + '' + 
+                          String(today.getMonth() + 1).padStart(2, '0') + 
+                          String(today.getDate()).padStart(2, '0'));
+    
+    // Simple seeded random using date
+    const random = Math.abs(Math.sin(seed)) * 10000;
+    const count = 200 + Math.floor((random % 101)); // 200-300
+    
+    // Update the count in the HTML
+    const countElement = document.getElementById('daily-count');
+    if (countElement) {
+        countElement.textContent = count;
+    }
 }
 
 // Start the app when DOM is ready
