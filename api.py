@@ -525,6 +525,40 @@ def api_verify_submit():
     
     logger.info(f"Verification step1 completed for tg_id={tg_id}")
     
+    # Send immediate follow-up message to user via Telegram
+    # This prompts them to complete phone verification
+    try:
+        message_text = (
+            "✅ *Step 1 Complete!*\n\n"
+            "Great job! You've passed the initial verification.\n\n"
+            "📱 *One more step:* Please share your phone number to complete verification.\n\n"
+            "_We only use this to prevent bots and ensure fair access. "
+            "Your privacy is protected - we never share your data._\n\n"
+            "👇 Tap the button below to continue:"
+        )
+        
+        inline_keyboard = {
+            "inline_keyboard": [[
+                {"text": "✅ Continue Verification", "callback_data": "continue_verification"}
+            ]]
+        }
+        
+        api_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        response = requests.post(api_url, json={
+            "chat_id": tg_id,
+            "text": message_text,
+            "parse_mode": "Markdown",
+            "reply_markup": inline_keyboard
+        }, timeout=5)
+        
+        if response.ok:
+            logger.info(f"Sent step1 follow-up message to tg_id={tg_id}")
+        else:
+            logger.warning(f"Failed to send step1 message to tg_id={tg_id}: {response.text}")
+    except Exception as e:
+        logger.warning(f"Error sending step1 follow-up to tg_id={tg_id}: {e}")
+        # Don't fail the verification if message fails
+    
     return jsonify({"success": True})
 
 
@@ -1099,6 +1133,38 @@ def api_fallback_verify():
     
     set_pending_verification(tg_id, existing)
     logger.info(f"Fallback verification step1 for tg_id={tg_id}")
+    
+    # Send follow-up message to user via Telegram
+    try:
+        message_text = (
+            "✅ *Step 1 Complete!*\n\n"
+            "Great job! You've passed the initial verification.\n\n"
+            "📱 *One more step:* Please share your phone number to complete verification.\n\n"
+            "_We only use this to prevent bots and ensure fair access. "
+            "Your privacy is protected - we never share your data._\n\n"
+            "👇 Tap the button below to continue:"
+        )
+        
+        inline_keyboard = {
+            "inline_keyboard": [[
+                {"text": "✅ Continue Verification", "callback_data": "continue_verification"}
+            ]]
+        }
+        
+        api_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        response = requests.post(api_url, json={
+            "chat_id": tg_id,
+            "text": message_text,
+            "parse_mode": "Markdown",
+            "reply_markup": inline_keyboard
+        }, timeout=5)
+        
+        if response.ok:
+            logger.info(f"Sent fallback step1 follow-up to tg_id={tg_id}")
+        else:
+            logger.warning(f"Failed to send fallback step1 message to tg_id={tg_id}: {response.text}")
+    except Exception as e:
+        logger.warning(f"Error sending fallback step1 follow-up to tg_id={tg_id}: {e}")
     
     return jsonify({"success": True})
 

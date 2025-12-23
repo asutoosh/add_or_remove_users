@@ -284,6 +284,26 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     keyboard = [
         [InlineKeyboardButton("🎁 Get Free Trial", callback_data="start_trial")],
     ]
+    
+    # Check if user has completed step1 (form) but not step2 (phone)
+    pending_data = get_pending_verification(user.id)
+    if pending_data and pending_data.get("step1_ok") and pending_data.get("status") != "phone_verified":
+        # User passed step1 but hasn't done phone verification yet
+        keyboard = [
+            [InlineKeyboardButton("✅ Continue Verification", callback_data="continue_verification")],
+        ]
+        await update.message.reply_text(
+            "✅ *Step 1 Already Complete!*\n\n"
+            "Great news! You've already passed the initial verification.\n\n"
+            "📱 *Just one more step:* Share your phone number to get your trial invite.\n\n"
+            "_We only use this to prevent bots and ensure fair access to our signals. "
+            "Your privacy is fully protected._\n\n"
+            "👇 Tap below to complete:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown",
+        )
+        return
+    
     await update.message.reply_text(
         "Welcome! Tap the button below to start your free trial verification.",
         reply_markup=InlineKeyboardMarkup(keyboard),
@@ -352,6 +372,24 @@ async def start_trial_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         except Exception as e:
             logger.warning(f"Error checking active trial for user {tg_id}: {e}")
             # Continue to show verification page if check fails
+
+    # Check if user has completed step1 (form) but not step2 (phone)
+    # If so, skip to Continue Verification instead of showing the page again
+    pending_data = get_pending_verification(tg_id)
+    if pending_data and pending_data.get("step1_ok") and pending_data.get("status") != "phone_verified":
+        keyboard = [
+            [InlineKeyboardButton("✅ Continue Verification", callback_data="continue_verification")],
+        ]
+        await query.edit_message_text(
+            "✅ *Step 1 Already Complete!*\n\n"
+            "Great news! You've already passed the initial verification.\n\n"
+            "📱 *Just one more step:* Share your phone number to get your trial invite.\n\n"
+            "_We only use this to prevent bots and ensure fair access._\n\n"
+            "👇 Tap below to complete:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown",
+        )
+        return
 
     # Build URL - use Web App if HTTPS, fallback to regular URL if HTTP
     # Telegram Web Apps require HTTPS, so we check BASE_URL scheme
@@ -439,10 +477,9 @@ async def continue_verification_callback(update: Update, context: ContextTypes.D
             "⚠️ Make sure you:\n"
             "1. Open the verification page\n"
             "2. Turn off VPN/Proxy\n"
-            "3. Fill in your details (name, country, email optional)\n"
+            "3. Fill in your details (name, country)\n"
             "4. Submit the form\n"
-            "5. Close the mini-app\n"
-            "6. Then click 'Continue verification'"
+            "5. Then click 'Continue verification'"
         )
         return
     
@@ -512,7 +549,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     """Help command explaining the bot and verification process."""
     help_text = (
         "🤖 *About This Bot*\n\n"
-        "This bot is used to manage users accessing premium content and services.\n\n"
+        "This bot gives you access to premium trading signals with a free 3-day trial.\n\n"
         "📋 *Available Commands:*\n"
         "• /start - Start the bot and begin free trial\n"
         "• /help - Help and commands list\n"
@@ -521,24 +558,17 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "• /support - Contact support\n\n"
         "🔐 *Verification Process:*\n\n"
         "*Step 1: Initial Verification*\n"
-        "1. Click on /start command\n"
-        "2. A 'Get Free Trial' button will appear\n"
-        "3. Click on the button to open the verification page\n"
-        "4. Turn off VPN/Proxy before proceeding\n"
-        "5. IP test will happen automatically\n"
-        "6. Fill in your details:\n"
-        "   • Name (required)\n"
-        "   • Country (required)\n"
-        "   • Email (optional - you can delete later)\n"
-        "7. Close the Telegram mini-app\n\n"
+        "1. Click /start and tap 'Get Free Trial'\n"
+        "2. Turn off VPN/Proxy before proceeding\n"
+        "3. Fill in your details (name, country)\n"
+        "4. Submit the form\n\n"
         "*Step 2: Phone Verification*\n"
-        "1. If Step 1 passed, click on 'Continue verification'\n"
-        "2. Click on 'Allow phone number access' button\n"
-        "   (We need this to confirm you're not a bot)\n"
-        "3. Share your phone number when prompted\n"
-        "4. You will receive a one-time premium group invite link\n"
-        "5. Join the group to access premium content\n\n"
-        "✅ Once both verifications are complete, you'll gain access to premium features!"
+        "1. Tap 'Continue verification'\n"
+        "2. Share your phone number when prompted\n"
+        "   _(We only use this to prevent bots)_\n"
+        "3. You'll receive your trial invite link\n"
+        "4. Join the channel to access premium signals\n\n"
+        "✅ That's it! Your 3-day trial starts when you join."
     )
     await update.message.reply_text(help_text, parse_mode="Markdown")
 
