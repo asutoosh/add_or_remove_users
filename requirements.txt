@@ -8,4 +8,7 @@ python-dotenv~=1.0
 gunicorn~=21.2
 aiohttp~=3.9
 
+# Mini App additions
+PyJWT~=2.8
+
 
