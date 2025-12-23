@@ -168,6 +168,60 @@ from telegram import (
     ReplyKeyboardRemove
 )
 
+async def start_trial_session(user, context: ContextTypes.DEFAULT_TYPE, send_welcome: bool = True) -> None:
+    """Starts a new trial session for the user (sets DB, schedules jobs, sends msg)."""
+    now = _now_utc()
+    
+    # Determine trial duration
+    if _is_weekend(now):
+        trial_days = 5
+        total_hours = TRIAL_HOURS_5_DAY
+    else:
+        trial_days = 3
+        total_hours = TRIAL_HOURS_3_DAY
+    
+    trial_end_at = now + timedelta(hours=total_hours)
+    
+    # Store active trial
+    set_active_trial(user.id, {
+        "join_time": now.isoformat(),
+        "total_hours": total_hours,
+        "trial_end_at": trial_end_at.isoformat(),
+    })
+    
+    append_trial_log({
+        "tg_id": user.id,
+        "username": user.username,
+        "join_time": now.isoformat(),
+        "trial_days": trial_days,
+    })
+    
+    if send_welcome:
+        await context.bot.send_message(
+            chat_id=user.id,
+            text=(
+                f"✅ Your {trial_days}-day ({int(total_hours)} hours) trial phase has started now!\n\n"
+                "You will receive reminders as your trial approaches the end."
+            ),
+        )
+        
+    # Schedule jobs
+    jq = context.job_queue
+    logger.info(f"Scheduling reminder jobs for user {user.id} ({trial_days}-day trial)")
+
+    if trial_days == 3:
+        jq.run_once(trial_reminder_3day_1, when=timedelta(minutes=REMINDER_1_MINUTES), data={"user_id": user.id}, name=f"reminder_1_{user.id}")
+        jq.run_once(trial_reminder_3day_2, when=timedelta(minutes=REMINDER_2_MINUTES), data={"user_id": user.id}, name=f"reminder_2_{user.id}")
+        jq.run_once(trial_end, when=timedelta(minutes=TRIAL_END_3DAY_MINUTES), data={"user_id": user.id}, name=f"trial_end_{user.id}")
+    else:
+        jq.run_once(trial_reminder_5day_1, when=timedelta(minutes=REMINDER_1_MINUTES), data={"user_id": user.id}, name=f"reminder_1_{user.id}")
+        jq.run_once(trial_reminder_5day_3, when=timedelta(minutes=REMINDER_3_MINUTES), data={"user_id": user.id}, name=f"reminder_3_{user.id}")
+        jq.run_once(trial_reminder_5day_4, when=timedelta(minutes=REMINDER_4_MINUTES), data={"user_id": user.id}, name=f"reminder_4_{user.id}")
+        jq.run_once(trial_end, when=timedelta(minutes=TRIAL_END_5DAY_MINUTES), data={"user_id": user.id}, name=f"trial_end_{user.id}")
+
+    logger.info(f"Started {trial_days}-day trial for user {user.id}")
+
+
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /start command - show Mini App button with fallback for other clients."""
     user = update.effective_user
@@ -196,6 +250,20 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     
     # Check if user has active trial
     active = get_active_trial(user.id)
+    
+    # SELF-HEALING: If no active trial record, check if they are actually in the channel
+    # This handles cases where the bot missed the 'join' event
+    if not active and not has_used_trial(user.id):
+        try:
+            member = await context.bot.get_chat_member(TRIAL_CHANNEL_ID, user.id)
+            if member.status in ("member", "administrator", "creator"):
+                 logger.info(f"Self-healing: User {user.id} is in channel but missing trial record. Starting trial now.")
+                 # Start the trial session (restoring missed state)
+                 await start_trial_session(user, context, send_welcome=True)
+                 active = get_active_trial(user.id) # Refresh active state
+        except Exception as e:
+            logger.warning(f"Failed to check membership for healing: {e}")
+            
     if active and "trial_end_at" in active:
         try:
             end_at = _parse_iso_to_utc(active["trial_end_at"])
@@ -530,6 +598,46 @@ async def retry_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "Please share your phone number using the button below.",
         reply_markup=keyboard,
     )
+
+
+async def text_during_phone_verification_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Handle text messages when user is supposed to share phone number via button.
+    Users sometimes type their phone number instead of clicking the share button.
+    """
+    if not update.message or not update.effective_user:
+        return
+    
+    user = update.effective_user
+    message_text = update.message.text or ""
+    
+    # Check if user is in the phone verification stage
+    # (has completed step1 but hasn't verified phone yet)
+    data = get_pending_verification(user.id)
+    
+    if data and data.get("step1_ok") and data.get("status") != "verified":
+        # User is in phone verification stage but sent text instead of clicking button
+        logger.info(f"User {user.id} sent text '{message_text[:50]}...' during phone verification stage")
+        
+        # Check if it looks like they typed a phone number
+        import re
+        looks_like_phone = bool(re.search(r'[\d\+\-\(\)\s]{7,}', message_text))
+        
+        if looks_like_phone:
+            await update.message.reply_text(
+                "⚠️ Please don't type your phone number!\n\n"
+                "For security, we need you to use Telegram's official phone sharing button.\n\n"
+                "👇 Click the **'📱 Share phone number'** button below to continue.",
+                parse_mode="Markdown"
+            )
+        else:
+            await update.message.reply_text(
+                "⚠️ Please use the button to share your phone number.\n\n"
+                "👇 Click the **'📱 Share phone number'** button below to continue verification.\n\n"
+                "If you don't see the button, type /retry to show it again.",
+                parse_mode="Markdown"
+            )
+        return
 
 
 async def phone_deny_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -946,6 +1054,10 @@ def main():
     # Contact Handler
     application.add_handler(MessageHandler(filters.CONTACT, contact_handler))
     application.add_handler(MessageHandler(filters.Regex("^❌ No thanks$"), phone_deny_handler))
+    
+    # Text fallback handler (must be last message handler to not block commands)
+    # Filters.text & ~Filters.command means "any text that is NOT a command"
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_during_phone_verification_handler))
     
     # Add callback handlers (for fallback workflow buttons)
     application.add_handler(CallbackQueryHandler(start_trial_fallback_callback, pattern="^start_trial_fallback$"))
