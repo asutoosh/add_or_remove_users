@@ -21,6 +21,8 @@ from telegram.ext import (
     ChatMemberHandler,
     CommandHandler,
     ContextTypes,
+    MessageHandler,
+    filters,
 )
 
 from storage import (
@@ -32,7 +34,13 @@ from storage import (
     get_used_trial_info,
     get_all_active_trials,
     append_trial_log,
+    append_trial_log,
     track_start_click,
+    get_pending_verification,
+    set_pending_verification,
+    clear_pending_verification,
+    get_valid_invite_link,
+    set_invite_info,
 )
 
 # Configure logging
@@ -73,6 +81,10 @@ REMINDER_3_MINUTES = _safe_float_env("REMINDER_3_MINUTES", 4320.0)  # 72h (5-day
 REMINDER_4_MINUTES = _safe_float_env("REMINDER_4_MINUTES", 5760.0)  # 96h (5-day)
 TRIAL_END_5DAY_MINUTES = _safe_float_env("TRIAL_END_5DAY_MINUTES", 7200.0)  # 120h
 
+TAMPERING_TOLERANCE_SECONDS = 3600
+BLOCKED_PHONE_COUNTRY_CODE = os.environ.get("BLOCKED_PHONE_COUNTRY_CODE", "+91")
+INVITE_LINK_EXPIRY_HOURS = 5
+
 TRIAL_COOLDOWN_DAYS = 30
 
 # Links
@@ -107,11 +119,54 @@ def _is_weekend(dt: datetime) -> bool:
     return local_dt.weekday() >= 5
 
 
+def validate_trial_data(trial_data: dict, user_id: int) -> bool:
+    """Validate trial data hasn't been tampered with."""
+    if "join_time" not in trial_data or "total_hours" not in trial_data:
+        return False
+    
+    try:
+        join_time = _parse_iso_to_utc(trial_data["join_time"])
+        total_hours = int(float(trial_data["total_hours"]))
+        
+        # Calculate expected end time
+        expected_end = join_time + timedelta(hours=total_hours)
+        
+        # If trial_end_at exists, it should match calculation (within tolerance)
+        if "trial_end_at" in trial_data:
+            claimed_end = _parse_iso_to_utc(trial_data["trial_end_at"])
+            time_diff = abs((claimed_end - expected_end).total_seconds())
+            if time_diff > TAMPERING_TOLERANCE_SECONDS:
+                logger.warning(f"Trial data tampering detected for user {user_id}")
+                return False
+        
+        # Check total_hours is valid
+        if total_hours not in [int(TRIAL_HOURS_3_DAY), int(TRIAL_HOURS_5_DAY)]:
+            # Allow float comparison tolerance or just strict check if they are exact
+            if abs(float(total_hours) - TRIAL_HOURS_3_DAY) > 0.1 and abs(float(total_hours) - TRIAL_HOURS_5_DAY) > 0.1:
+                logger.warning(f"Invalid total_hours ({total_hours}) for user {user_id}")
+                return False
+        
+        if join_time > _now_utc():
+            return False
+            
+        return True
+    except Exception as e:
+        logger.warning(f"Error validating trial data for user {user_id}: {e}")
+        return False
+
+
 # =============================================================================
 # Command Handlers (Fallback for non-Mini App clients)
 # =============================================================================
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
+from telegram import (
+    InlineKeyboardButton, 
+    InlineKeyboardMarkup, 
+    WebAppInfo,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+    ReplyKeyboardRemove
+)
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /start command - show Mini App button with fallback for other clients."""
@@ -168,6 +223,24 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             callback_data="start_trial_fallback"
         )]
     ]
+    
+    # Check if user has completed step1 (form) but not step2 (phone)
+    pending_data = get_pending_verification(user.id)
+    if pending_data and pending_data.get("step1_ok") and pending_data.get("status") != "phone_verified":
+        # User passed step1 but hasn't done phone verification yet
+        keyboard = [
+            [InlineKeyboardButton("✅ Continue Verification", callback_data="continue_verification")],
+        ]
+        await update.message.reply_text(
+            "✅ *Step 1 Already Complete!*\n\n"
+            "Great news! You've already passed the initial verification.\n\n"
+            "📱 *Just one more step:* Share your phone number to get your trial invite.\n\n"
+            "👇 Tap below to complete:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown",
+        )
+        return
+    
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await update.message.reply_text(
@@ -325,77 +398,145 @@ async def continue_verification_callback(update: Update, context: ContextTypes.D
             parse_mode="Markdown"
         )
         return
-    
-    # Check if user already used their trial (prevent infinite invites)
-    if has_used_trial(user.id):
-        await query.edit_message_text(
-            "You have already used your free trial.\n\n"
-            f"🎁 Join giveaways: {GIVEAWAY_CHANNEL_URL}\n"
-            f"💬 Upgrade: {SUPPORT_CONTACT}",
-        )
-        return
-    
-    # Check if user already has active trial
-    active = get_active_trial(user.id)
-    if active and "trial_end_at" in active:
-        try:
-            end_at = _parse_iso_to_utc(active["trial_end_at"])
-            if _now_utc() < end_at:
-                remaining = (end_at - _now_utc()).total_seconds() / 3600
-                await query.edit_message_text(
-                    f"✅ You already have an active trial!\n\n"
-                    f"⏳ Time remaining: {remaining:.1f} hours\n\n"
-                    f"💬 Questions? DM {SUPPORT_CONTACT}",
-                )
-                return
-        except Exception:
-            pass
-    
-    # Check if user already has a valid (non-expired) invite link
-    from storage import get_valid_invite_link
-    existing_link = get_valid_invite_link(user.id, _now_utc())
-    if existing_link:
-        await query.edit_message_text(
-            f"✅ **You already have an invite link!**\n\n"
-            f"Tap below to join:\n{existing_link}\n\n"
-            f"⚠️ Use this link before it expires.",
-            parse_mode="Markdown"
-        )
-        return
-    
-    # Verification passed! Generate invite link
-    try:
-        now = _now_utc()
-        if _is_weekend(now):
-            trial_days = 5
-            total_hours = TRIAL_HOURS_5_DAY
-        else:
-            trial_days = 3
-            total_hours = TRIAL_HOURS_3_DAY
         
-        # Create invite link
+    # Step 1 passed - Request Phone Number
+    contact_button = KeyboardButton(text="📱 Share phone number", request_contact=True)
+    deny_button = KeyboardButton(text="❌ No thanks")
+    keyboard = ReplyKeyboardMarkup(
+        [[contact_button], [deny_button]], 
+        resize_keyboard=True, 
+        one_time_keyboard=True
+    )
+
+    await query.message.reply_text(
+        "Step 1 passed ✅.\n\n"
+        "Step 2: Please share your phone number using the button below.\n\n"
+        "We use your name, country, and phone number only for verification, "
+        "security and internal analytics. We do not sell or share this data.",
+        reply_markup=keyboard,
+    )
+
+
+async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message or not update.effective_user:
+        return
+
+    contact = update.message.contact
+    user = update.effective_user
+
+    if not contact:
+        return
+
+    # Check if user has already used trial
+    if has_used_trial(user.id):
+        await update.message.reply_text(
+            "You have already used your free trial.",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        return
+
+    # Ensure the shared contact belongs to the same user
+    if contact.user_id and contact.user_id != user.id:
+        await update.message.reply_text("Please share your own phone number using the button.")
+        return
+
+    phone = contact.phone_number or ""
+    if not phone.startswith("+"):
+        phone = "+" + phone
+
+    data = get_pending_verification(user.id) or {}
+
+    # Block phone numbers by country code
+    if BLOCKED_PHONE_COUNTRY_CODE and phone.startswith(BLOCKED_PHONE_COUNTRY_CODE):
+        data["status"] = "blocked_phone_india"
+        data["phone"] = phone
+        set_pending_verification(user.id, data)
+        await update.message.reply_text(
+            "You are not eligible for this trial with this phone number.",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        return
+
+    # Passed phone check
+    data["status"] = "verified"
+    data["phone"] = phone
+    set_pending_verification(user.id, data)
+
+    # Check if user already has a valid invite link
+    now = _now_utc()
+    existing_link = get_valid_invite_link(user.id, now)
+    
+    if existing_link:
+        await update.message.reply_text(
+            f"✅ You already have an invite link!\n\n{existing_link}",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        return
+
+    await update.message.reply_text("Verification 2 passed ✅. Generating your ONE-TIME invite link...")
+
+    try:
+        expires_at_dt = now + timedelta(hours=INVITE_LINK_EXPIRY_HOURS)
         invite_link = await context.bot.create_chat_invite_link(
             chat_id=TRIAL_CHANNEL_ID,
             member_limit=1,
-            expire_date=now + timedelta(hours=5),
+            expire_date=int(expires_at_dt.timestamp()),
         )
         
-        await query.edit_message_text(
-            f"✅ **Verification Passed!**\n\n"
-            f"🎁 Your {trial_days}-day trial is ready!\n\n"
-            f"Tap below to join:\n{invite_link.invite_link}\n\n"
-            f"⚠️ Link expires in 5 hours.",
-            parse_mode="Markdown"
+        # Store invite metadata
+        set_invite_info(
+            user.id,
+            {
+                "invite_link": invite_link.invite_link,
+                "invite_created_at": now.isoformat(),
+                "invite_expires_at": expires_at_dt.isoformat(),
+            },
         )
         
-        logger.info(f"Generated fallback invite for user {user.id}")
+        await update.message.reply_text(
+            f"Here is your one-time trial invite:\n\n{invite_link.invite_link}\n\n⚠️ Link expires in {INVITE_LINK_EXPIRY_HOURS} hours.",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        
+        # Log completion
+        append_trial_log({
+            "tg_id": user.id,
+            "username": user.username,
+            "name": data.get("name"),
+            "country": data.get("country"),
+            "phone": phone,
+            "verification_completed_at": now.isoformat(),
+        })
+        
+        clear_pending_verification(user.id)
         
     except Exception as e:
-        logger.error(f"Failed to generate invite: {e}")
-        await query.edit_message_text(
-            "❌ Error generating invite link.\n\n"
-            f"Please contact {SUPPORT_CONTACT} for help.",
+        logger.error(f"Failed to generate invite for {user.id}: {e}")
+        await update.message.reply_text(
+            "Error generating invite link. Please contact support.",
+            reply_markup=ReplyKeyboardRemove(),
         )
+
+
+async def retry_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    contact_button = KeyboardButton(text="📱 Share phone number", request_contact=True)
+    deny_button = KeyboardButton(text="❌ No thanks")
+    keyboard = ReplyKeyboardMarkup(
+        [[contact_button], [deny_button]], 
+        resize_keyboard=True, 
+        one_time_keyboard=True
+    )
+    await update.message.reply_text(
+        "Please share your phone number using the button below.",
+        reply_markup=keyboard,
+    )
+
+
+async def phone_deny_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text(
+        "No problem! Verification cancelled. Use /start to try again.",
+        reply_markup=ReplyKeyboardRemove(),
+    )
 
 
 # =============================================================================
@@ -800,6 +941,11 @@ def main():
     application.add_handler(CommandHandler("faq", cmd_faq))
     application.add_handler(CommandHandler("about", cmd_about))
     application.add_handler(CommandHandler("support", cmd_support))
+    application.add_handler(CommandHandler("retry", retry_command))
+    
+    # Contact Handler
+    application.add_handler(MessageHandler(filters.CONTACT, contact_handler))
+    application.add_handler(MessageHandler(filters.Regex("^❌ No thanks$"), phone_deny_handler))
     
     # Add callback handlers (for fallback workflow buttons)
     application.add_handler(CallbackQueryHandler(start_trial_fallback_callback, pattern="^start_trial_fallback$"))
