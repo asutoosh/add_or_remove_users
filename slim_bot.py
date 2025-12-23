@@ -161,7 +161,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     keyboard = [
         [InlineKeyboardButton(
             text="🚀 Start Free Trial",
-            web_app=WebAppInfo(url=BASE_URL)
+            web_app=WebAppInfo(url=f"{BASE_URL.rstrip('/')}/app")
         )],
         [InlineKeyboardButton(
             text="📱 Not working? Tap here",
@@ -182,14 +182,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /help command."""
-    keyboard = [[
-        InlineKeyboardButton(
-            text="🚀 Open Mini App",
-            web_app=WebAppInfo(url=BASE_URL)
-        )
-    ]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
     await update.message.reply_text(
         "📚 **Commands & Help**\n\n"
         "/start - Start your free trial\n"
@@ -198,7 +190,6 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/about - About Freya Quinn\n"
         "/support - Contact support\n\n"
         f"💬 Direct support: {SUPPORT_CONTACT}",
-        reply_markup=reply_markup,
         parse_mode="Markdown"
     )
 
