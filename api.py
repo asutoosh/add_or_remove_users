@@ -17,7 +17,7 @@ import re
 import urllib.parse
 
 from dotenv import load_dotenv
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, send_from_directory, redirect
 import requests
 
 from storage import (
@@ -671,17 +671,207 @@ def api_trial_info():
 
 
 # =============================================================================
-# Legacy Web Endpoints
+# Legacy / Fallback Endpoints (for non-Mini App clients)
 # =============================================================================
-# NOTE: The legacy /trial page is served by web_app.py
-# For unified deployment, run api.py as the main app.
-# The legacy endpoints can be accessed by running web_app.py separately
-# or by proxying /trial requests to the legacy app.
-#
-# If you need legacy support, you can:
-# 1. Run web_app.py on a different port (e.g., 5001)
-# 2. Configure nginx to proxy /trial to that port
-# 3. Or use the Mini App exclusively (recommended)
+
+@app.route("/trial")
+def trial_page():
+    """
+    Fallback trial page for non-Mini App clients.
+    Redirects to Mini App with tg_id query param preserved.
+    """
+    tg_id = request.args.get("tg_id")
+    if tg_id:
+        # For browsers that don't support WebApp, show a simple verification page
+        return f"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Free Trial Verification</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body {{
+            font-family: system-ui, -apple-system, sans-serif;
+            background: #050816;
+            color: #f3f4f6;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            padding: 16px;
+        }}
+        .card {{
+            background: #020617;
+            border-radius: 16px;
+            padding: 24px;
+            max-width: 420px;
+            width: 100%;
+            border: 1px solid rgba(148,163,184,0.4);
+        }}
+        h2 {{ margin-top: 0; }}
+        form {{ display: flex; flex-direction: column; gap: 12px; }}
+        input, select {{
+            padding: 10px;
+            border-radius: 8px;
+            border: 1px solid #4b5563;
+            background: rgba(15,23,42,0.8);
+            color: #f9fafb;
+            font-size: 1rem;
+        }}
+        button {{
+            padding: 12px;
+            border-radius: 999px;
+            border: none;
+            background: linear-gradient(135deg, #22c55e, #16a34a);
+            color: white;
+            font-weight: 600;
+            cursor: pointer;
+        }}
+        .success {{ color: #22c55e; }}
+        .error {{ color: #ef4444; }}
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h2>Free Trial Verification</h2>
+        <p>Complete this form to verify your eligibility.</p>
+        <form id="vform">
+            <input type="hidden" id="tg_id" value="{tg_id}">
+            <input type="text" id="name" placeholder="Your Name" required>
+            <select id="country" required>
+                <option value="">Select Country</option>
+                <option value="United States">United States</option>
+                <option value="United Kingdom">United Kingdom</option>
+                <option value="Canada">Canada</option>
+                <option value="Australia">Australia</option>
+                <option value="Germany">Germany</option>
+                <option value="France">France</option>
+                <option value="Other">Other</option>
+            </select>
+            <input type="email" id="email" placeholder="Email (optional)">
+            <button type="submit">Complete Verification</button>
+            <div id="msg"></div>
+        </form>
+    </div>
+    <script>
+        document.getElementById('vform').onsubmit = async function(e) {{
+            e.preventDefault();
+            const msg = document.getElementById('msg');
+            const tg_id = document.getElementById('tg_id').value;
+            const name = document.getElementById('name').value;
+            const country = document.getElementById('country').value;
+            const email = document.getElementById('email').value;
+            
+            try {{
+                // Store verification directly via storage
+                const resp = await fetch('/api/fallback/verify', {{
+                    method: 'POST',
+                    headers: {{'Content-Type': 'application/json'}},
+                    body: JSON.stringify({{tg_id, name, country, email}})
+                }});
+                const data = await resp.json();
+                if (data.success) {{
+                    msg.className = 'success';
+                    msg.innerHTML = '✅ Verification complete! Return to Telegram and tap "Done - Continue".';
+                }} else {{
+                    msg.className = 'error';
+                    msg.textContent = data.error || 'Error. Please try again.';
+                }}
+            }} catch(err) {{
+                msg.className = 'error';
+                msg.textContent = 'Network error. Please try again.';
+            }}
+        }};
+    </script>
+</body>
+</html>
+"""
+    # No tg_id, redirect to main page
+    return redirect("/")
+
+
+@app.route("/api/fallback/verify", methods=["POST"])
+def api_fallback_verify():
+    """
+    Simple fallback verification for non-Mini App clients.
+    Stores step1_ok without requiring Telegram auth (uses tg_id from form).
+    """
+    data = request.get_json() or {}
+    tg_id_str = data.get("tg_id")
+    
+    if not tg_id_str:
+        return jsonify({"success": False, "error": "Missing tg_id"})
+    
+    try:
+        tg_id = int(tg_id_str)
+    except ValueError:
+        return jsonify({"success": False, "error": "Invalid tg_id"})
+    
+    name = sanitize_input(data.get("name", ""), max_length=100)
+    country = sanitize_input(data.get("country", ""), max_length=100)
+    email = sanitize_input(data.get("email", ""), max_length=255)
+    
+    if not name or not country:
+        return jsonify({"success": False, "error": "Name and country required"})
+    
+    # Check IP
+    ip = get_client_ip()
+    is_vpn, is_blocked, api_failed, country_code = check_ip_status(ip)
+    
+    if is_vpn and not api_failed:
+        return jsonify({"success": False, "error": "VPN/Proxy detected. Please disable and try again."})
+    
+    if is_blocked and not api_failed:
+        return jsonify({"success": False, "error": "Your country is not eligible for the trial."})
+    
+    # Store verification
+    existing = get_pending_verification(tg_id) or {}
+    existing.update({
+        "tg_id": tg_id,
+        "name": name,
+        "country": country,
+        "email": email,
+        "ip_address": ip,
+        "ip_country_code": country_code,
+        "step1_ok": True,
+        "status": "step1_passed",
+        "verified_at": _now_utc().isoformat(),
+        "fallback_flow": True,
+    })
+    
+    if api_failed:
+        existing["ip_check_bypassed"] = True
+        existing["requires_manual_review"] = True
+    
+    set_pending_verification(tg_id, existing)
+    logger.info(f"Fallback verification step1 for tg_id={tg_id}")
+    
+    return jsonify({"success": True})
+
+
+@app.route("/api/get-verification", methods=["GET"])
+def api_get_verification():
+    """
+    API endpoint for bot to fetch verification data.
+    Allows bot to check if user passed web verification.
+    """
+    # Check API secret if configured
+    api_secret = os.environ.get("API_SECRET", "")
+    if api_secret:
+        provided = request.headers.get("X-API-Secret") or request.args.get("secret")
+        if provided != api_secret:
+            return jsonify({"error": "Unauthorized"}), 401
+    
+    tg_id_str = request.args.get("tg_id")
+    if not tg_id_str or not tg_id_str.isdigit():
+        return jsonify({"error": "Invalid tg_id"}), 400
+    
+    data = get_pending_verification(int(tg_id_str))
+    if data:
+        return jsonify({"success": True, "data": data})
+    return jsonify({"success": False, "data": None})
 
 
 # =============================================================================
