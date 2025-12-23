@@ -365,6 +365,11 @@ async function generateInviteLink() {
                 if (TG) {
                     TG.openTelegramLink(result.invite_link);
                     e.preventDefault();
+                    
+                    // Close the app automatically to return to the chat/channel
+                    setTimeout(() => {
+                        TG.close();
+                    }, 1000);
                 }
             };
             
@@ -380,6 +385,11 @@ async function generateInviteLink() {
                 if (TG) {
                     TG.openTelegramLink(result.invite_link);
                     e.preventDefault();
+                    
+                    // Close the app automatically to return to the chat/channel
+                    setTimeout(() => {
+                        TG.close();
+                    }, 1000);
                 }
             };
             
