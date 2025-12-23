@@ -1293,10 +1293,10 @@ async def trial_chat_member_update(update: Update, context: ContextTypes.DEFAULT
         )
 
         message = (
-            "─────────────────────────────\n\n"
+            "-----------------------------\n\n"
             f"✅ Your {trial_days}-day ({total_hours} hours) trial phase has started now!\n\n"
             "You will receive reminders as your trial approaches the end.\n\n"
-            "─────────────────────────────"
+            "-----------------------------"
         )
         await context.bot.send_message(chat_id=user.id, text=message)
 
@@ -1503,7 +1503,7 @@ async def trial_reminder_3day_1(context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = context.job.data["user_id"]
     logger.info(f"trial_reminder_3day_1 job executing for user {user_id}")
     message = (
-        "─────────────────────────────\n\n"
+        "-----------------------------\n\n"
         "Hey, it's Freya 💋\n\n"
         "You've been inside my 3-Day Trial for about a day now – I hope you've already seen how I structure my trades and risk.\n\n"
         "In this group you'll usually see:\n\n"
@@ -1513,7 +1513,7 @@ async def trial_reminder_3day_1(context: ContextTypes.DEFAULT_TYPE) -> None:
         "If you missed anything, scroll up in the trial chat and check today's setups – everything is transparent, including wins and SL.\n\n"
         f"If you have any questions, you can always DM me here: {SUPPORT_CONTACT}\n\n"
         "Stay tuned, more setups are coming. 💸\n\n"
-        "─────────────────────────────"
+        "-----------------------------"
     )
     await _send_trial_reminder(context, user_id, message, reminder_name="24h_reminder_3day")
 
@@ -1522,7 +1522,7 @@ async def trial_reminder_3day_2(context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = context.job.data["user_id"]
     logger.info(f"trial_reminder_3day_2 job executing for user {user_id}")
     message = (
-        "─────────────────────────────\n\n"
+        "-----------------------------\n\n"
         "Day 2 check-in 🧡\n\n"
         "You're almost two days into the trial now. You've probably noticed:\n\n"
         "• How I wait for clean setups, not random entries\n"
@@ -1535,7 +1535,7 @@ async def trial_reminder_3day_2(context: ContextTypes.DEFAULT_TYPE) -> None:
         "I'll send you a small reminder again when your trial is about to end, so you don't miss the chance to continue.\n\n"
         f"For now – just keep watching the signals and see if it matches your personality and schedule. ❤️\n\n"
         f"If you already know you want to stay, message me 'PREMIUM' here: {SUPPORT_CONTACT}\n\n"
-        "─────────────────────────────"
+        "-----------------------------"
     )
     await _send_trial_reminder(context, user_id, message, reminder_name="48h_reminder_3day")
 
@@ -1544,10 +1544,10 @@ async def trial_reminder_5day_1(context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = context.job.data["user_id"]
     logger.info(f"trial_reminder_5day_1 job executing for user {user_id}")
     message = (
-        "─────────────────────────────\n\n"
+        "-----------------------------\n\n"
         "⏱ 1 day (24 hours) has passed, 4 days remaining in your 5-day trial.\n\n"
         f"💬 Enjoying the signals? Upgrade anytime by contacting {SUPPORT_CONTACT}\n\n"
-        "─────────────────────────────"
+        "-----------------------------"
     )
     await _send_trial_reminder(context, user_id, message, reminder_name="24h_reminder_5day")
 
@@ -1556,10 +1556,10 @@ async def trial_reminder_5day_3(context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = context.job.data["user_id"]
     logger.info(f"trial_reminder_5day_3 job executing for user {user_id}")
     message = (
-        "─────────────────────────────\n\n"
+        "-----------------------------\n\n"
         "⏱ 3 days (72 hours) have passed, 2 days remaining in your 5-day trial.\n\n"
         f"💬 Want to continue after trial? Contact {SUPPORT_CONTACT}\n\n"
-        "─────────────────────────────"
+        "-----------------------------"
     )
     await _send_trial_reminder(context, user_id, message, reminder_name="72h_reminder_5day")
 
@@ -1568,10 +1568,10 @@ async def trial_reminder_5day_4(context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = context.job.data["user_id"]
     logger.info(f"trial_reminder_5day_4 job executing for user {user_id}")
     message = (
-        "─────────────────────────────\n\n"
+        "-----------------------------\n\n"
         "⏱ 4 days (96 hours) have passed. Only the last 24 hours left in your trial!\n\n"
         f"⚡ Don't miss out! Contact {SUPPORT_CONTACT} to upgrade and keep receiving signals.\n\n"
-        "─────────────────────────────"
+        "-----------------------------"
     )
     await _send_trial_reminder(context, user_id, message, reminder_name="96h_reminder_5day")
 
@@ -1615,7 +1615,7 @@ async def trial_end(context: ContextTypes.DEFAULT_TYPE) -> None:
     # Notify user and remove them from trial channel
     try:
         message = (
-            "─────────────────────────────\n\n"
+            "-----------------------------\n\n"
             "Your trial just ended 🕊\n\n"
             "Thank you for testing Freya's Flirty Profits for 3 days.\n\n"
             "If you liked the structure of the signals and want to keep going, here are your options:\n\n"
@@ -1627,7 +1627,7 @@ async def trial_end(context: ContextTypes.DEFAULT_TYPE) -> None:
             "If you're not ready yet, no pressure – you can also stay connected through my public channel for updates and occasional previews:\n\n"
             f"🌐 Public channel: {GIVEAWAY_CHANNEL_URL}\n\n"
             "Trade safe, manage your risk, and remember: no one wins every trade – the edge comes from discipline. 💚\n\n"
-            "─────────────────────────────"
+            "-----------------------------"
         )
         await context.bot.send_message(chat_id=user_id, text=message)
         logger.info(f"✅ Sent trial end message to user {user_id}")
