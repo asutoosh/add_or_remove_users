@@ -281,6 +281,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             logger.warning(f"Error checking active trial for user {user.id}: {e}")
             # Continue to show normal start message if check fails
 
+    # Check if user has a valid invite link that hasn't expired yet
+    # This prevents the loop where users restart flow and get a new link
+    now = _now_utc()
+    existing_link = get_valid_invite_link(user.id, now)
+    if existing_link:
+        await update.message.reply_text(
+            "✅ You already have a valid trial invite link!\n\n"
+            f"🔗 {existing_link}\n\n"
+            "Please use this link to join the trial channel.\n"
+            "If the link doesn't work (or says expired), it might have been used or revoked.\n"
+            "You can try waiting for it to expire (5 hours) or contact support.",
+        )
+        return
+
     keyboard = [
         [InlineKeyboardButton("🎁 Get Free Trial", callback_data="start_trial")],
     ]

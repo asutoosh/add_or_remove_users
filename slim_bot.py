@@ -275,9 +275,24 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                     f"💬 Questions? DM {SUPPORT_CONTACT}",
                 )
                 return
+
         except Exception:
             pass
     
+    # Check if user has a valid invite link that hasn't expired yet
+    # This prevents the loop where users restart flow and get a new link
+    now = _now_utc()
+    existing_link = get_valid_invite_link(user.id, now)
+    if existing_link:
+        await update.message.reply_text(
+            "✅ You already have a valid trial invite link!\n\n"
+            f"🔗 {existing_link}\n\n"
+            "Please use this link to join the trial channel.\n"
+            "If the link doesn't work (or says expired), it might have been used or revoked.\n"
+            "You can try waiting for it to expire (5 hours) or contact support.",
+        )
+        return
+
     # Dual-mode keyboard:
     # Row 1: Mini App button (for official Telegram clients)
     # Row 2: Fallback callback button (for Telegram X and other clients)
@@ -896,13 +911,15 @@ async def _send_reminder(context: ContextTypes.DEFAULT_TYPE, user_id: int, messa
 async def trial_reminder_3day_1(context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = context.job.data["user_id"]
     await _send_reminder(context, user_id,
-        f"Hey, it's Freya 💋\n\n"
-        f"You've been in your 3-Day Trial for about a day now.\n\n"
-        f"In this group you'll see:\n"
-        f"• 🔔 2–6 signals per day\n"
-        f"• 🎯 Clear entry, TP \u0026 SL\n"
-        f"• 📊 Screenshots + explanations\n\n"
-        f"Questions? DM {SUPPORT_CONTACT}",
+        "Hey, it's Freya 💋\n\n"
+        "You've been inside my 3-Day Trial for about a day now – I hope you've already seen how I structure my trades and risk.\n\n"
+        "In this group you'll usually see:\n\n"
+        "• 🔔 2–6 signals per day\n"
+        "• 🎯 Clear entry, take-profit levels & stop-loss\n"
+        "• 📊 Screenshots + short explanation so you can learn, not just copy\n\n"
+        "If you missed anything, scroll up in the trial chat and check today's setups – everything is transparent, including wins and SL.\n\n"
+        f"If you have any questions, you can always DM me here: {SUPPORT_CONTACT}\n\n"
+        "Stay tuned, more setups are coming. 💸",
         "24h_reminder_3day"
     )
 
@@ -910,10 +927,18 @@ async def trial_reminder_3day_1(context: ContextTypes.DEFAULT_TYPE) -> None:
 async def trial_reminder_3day_2(context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = context.job.data["user_id"]
     await _send_reminder(context, user_id,
-        f"Day 2 check-in 🧡\n\n"
-        f"Almost two days into the trial now.\n\n"
-        f"If you like the signals, my members stay on a 30-Day Premium plan.\n\n"
-        f"Ready to upgrade? DM {SUPPORT_CONTACT} 'PREMIUM'",
+        "Day 2 check-in 🧡\n\n"
+        "You're almost two days into the trial now. You've probably noticed:\n\n"
+        "• How I wait for clean setups, not random entries\n"
+        "• How every trade comes with a fixed SL (no \"no-SL gambling\")\n"
+        "• How I manage multiple take-profits to lock in profit\n\n"
+        "If this style fits you and you want daily guidance, my members stay with me on a 30-Day Premium plan where they get:\n\n"
+        "• Full-access signals (all pairs / gold / indices I trade)\n"
+        "• Priority support in DM\n"
+        "• Occasional market breakdowns & extra tips\n\n"
+        "I'll send you a small reminder again when your trial is about to end, so you don't miss the chance to continue.\n\n"
+        f"For now – just keep watching the signals and see if it matches your personality and schedule. ❤️\n\n"
+        f"If you already know you want to stay, message me 'PREMIUM' here: {SUPPORT_CONTACT}",
         "48h_reminder_3day"
     )
 
@@ -921,8 +946,8 @@ async def trial_reminder_3day_2(context: ContextTypes.DEFAULT_TYPE) -> None:
 async def trial_reminder_5day_1(context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = context.job.data["user_id"]
     await _send_reminder(context, user_id,
-        f"⏱ 1 day passed, 4 days remaining in your 5-day trial.\n\n"
-        f"💬 Upgrade anytime: {SUPPORT_CONTACT}",
+        "⏱ 1 day (24 hours) has passed, 4 days remaining in your 5-day trial.\n\n"
+        f"💬 Enjoying the signals? Upgrade anytime by contacting {SUPPORT_CONTACT}",
         "24h_reminder_5day"
     )
 
@@ -930,8 +955,8 @@ async def trial_reminder_5day_1(context: ContextTypes.DEFAULT_TYPE) -> None:
 async def trial_reminder_5day_3(context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = context.job.data["user_id"]
     await _send_reminder(context, user_id,
-        f"⏱ 3 days passed, 2 days remaining in your 5-day trial.\n\n"
-        f"💬 Questions? {SUPPORT_CONTACT}",
+        "⏱ 3 days (72 hours) have passed, 2 days remaining in your 5-day trial.\n\n"
+        f"💬 Questions about upgrading? Contact {SUPPORT_CONTACT}",
         "72h_reminder_5day"
     )
 
@@ -939,8 +964,8 @@ async def trial_reminder_5day_3(context: ContextTypes.DEFAULT_TYPE) -> None:
 async def trial_reminder_5day_4(context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = context.job.data["user_id"]
     await _send_reminder(context, user_id,
-        f"⏱ 4 days passed. Only 24 hours left!\n\n"
-        f"⚡ Upgrade now: {SUPPORT_CONTACT}",
+        "⏱ 4 days (96 hours) have passed. Only the last 24 hours left in your trial!\n\n"
+        f"⚡ Don't miss out! Contact {SUPPORT_CONTACT} to upgrade and keep receiving signals.",
         "96h_reminder_5day"
     )
 
@@ -970,11 +995,19 @@ async def trial_end(context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         await context.bot.send_message(
             chat_id=user_id,
-            text=f"Your trial just ended 🕊\n\n"
-                 f"Thank you for testing Freya's Flirty Profits.\n\n"
-                 f"✅ 30-Day Premium: Full access + DM support\n\n"
-                 f"DM {SUPPORT_CONTACT} to upgrade\n\n"
-                 f"Free content: {GIVEAWAY_CHANNEL_URL}",
+            text=(
+                "Your trial just ended 🕊\n\n"
+                "Thank you for testing Freya's Flirty Profits for 3 days.\n\n"
+                "If you liked the structure of the signals and want to keep going, here are your options:\n\n"
+                "✅ 30-Day Premium Membership\n"
+                "– Full access to all signals\n"
+                "– Same entries I personally take\n"
+                "– Ongoing DM support for questions\n\n"
+                f"Message me directly: {SUPPORT_CONTACT}\n\n"
+                "If you're not ready yet, no pressure – you can also stay connected through my public channel for updates and occasional previews:\n\n"
+                f"🌐 Public channel: {GIVEAWAY_CHANNEL_URL}\n\n"
+                "Trade safe, manage your risk, and remember: no one wins every trade – the edge comes from discipline. 💚"
+            ),
         )
     except Exception as e:
         logger.warning(f"Failed to send trial end message: {e}")
