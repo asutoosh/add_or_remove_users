@@ -54,6 +54,7 @@ BLOCKED_PHONE_COUNTRY_CODE = os.environ.get("BLOCKED_PHONE_COUNTRY_CODE", "+91")
 GIVEAWAY_CHANNEL_URL = os.environ.get("GIVEAWAY_CHANNEL_URL", "https://t.me/Freya_Trades")
 SUPPORT_CONTACT = os.environ.get("SUPPORT_CONTACT", "@cogitosk")
 INVITE_LINK_EXPIRY_HOURS = int(os.environ.get("INVITE_LINK_EXPIRY_HOURS", "5"))
+BOT_USERNAME = os.environ.get("BOT_USERNAME", "Letttttmeeeeeeiiiiiiinbot")
 
 # SECURITY FIX #6: Warn if API_SECRET not set
 if not API_SECRET:
@@ -1160,7 +1161,7 @@ def trial_page():
                     
                     // Redirect to bot after 2 seconds
                     setTimeout(() => {{
-                        window.location.href = "https://t.me/Letttttmeeeeeeiiiiiiinbot";
+                        window.location.href = "https://t.me/{BOT_USERNAME}";
                     }}, 2000);
                 }} else {{
                     msg.className = 'error';

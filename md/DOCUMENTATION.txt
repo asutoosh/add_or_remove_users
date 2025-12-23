@@ -1,0 +1,732 @@
+# Freya Quinn Trial Bot - Complete Repository Documentation
+
+> **Single Source of Truth** for understanding, running, maintaining, and deploying this project.
+
+---
+
+## Table of Contents
+
+1. [Overview & Purpose](#overview--purpose)
+2. [Architecture & Folder Structure](#architecture--folder-structure)
+3. [Technology Stack](#technology-stack)
+4. [Project Workflow](#project-workflow)
+5. [Configuration & Environment Variables](#configuration--environment-variables)
+6. [Local Development Setup](#local-development-setup)
+7. [Deployment](#deployment)
+8. [Switching Environments, Branches & Modes](#switching-environments-branches--modes)
+9. [Build, Run & Troubleshooting](#build-run--troubleshooting)
+10. [Scripts, Automation & CI/CD](#scripts-automation--cicd)
+11. [API Reference](#api-reference)
+12. [Data Storage](#data-storage)
+13. [Security Features](#security-features)
+
+---
+
+## Overview & Purpose
+
+**Freya Quinn Trial Bot** is a Telegram-based trial subscription system for a trading signals service. It provides:
+
+- **Free 3-day or 5-day trial access** to a private Telegram channel with premium trading signals
+- **Multi-step verification** before granting access (IP/VPN check, form submission, optional phone verification)
+- **Dual-mode interface**: Telegram Mini App (primary) + fallback web verification for clients that don't support Mini Apps
+- **Automated trial management** with scheduled reminders and automatic removal at trial end
+- **Anti-abuse measures**: VPN/proxy detection, country blocking, rate limiting, and one-trial-per-user enforcement
+
+### Key Features
+
+| Feature | Description |
+|---------|-------------|
+| **Telegram Mini App** | Modern, native-feeling UI inside Telegram |
+| **Fallback Verification** | Web-based flow for Telegram X and other unsupported clients |
+| **IP2Location Integration** | Detects VPNs, proxies, and blocked countries |
+| **Scheduled Reminders** | Automated messages at 24h, 48h, 72h (for 3-day) or 24h, 72h, 96h (for 5-day) |
+| **Trial End Automation** | Automatically removes users from channel when trial expires |
+| **Weekend Detection** | 5-day trials on weekends, 3-day trials on weekdays |
+
+---
+
+## Architecture & Folder Structure
+
+```
+add_or_remove_users/
+├── .env                    # Environment variables (not in git)
+├── .env.example            # Template for environment configuration
+├── .gitignore              # Git ignore rules
+├── requirements.txt        # Python dependencies
+├── nginx.conf              # Nginx reverse proxy configuration
+│
+├── slim_bot.py             # Main Telegram bot (commands, handlers, reminders)
+├── api.py                  # REST API backend for Mini App
+├── web_app.py              # Legacy web-based verification (fallback)
+├── storage.py              # JSON file-based data persistence
+│
+├── mini_app/               # Telegram Mini App frontend
+│   ├── index.html          # Main HTML structure (9 screens)
+│   ├── styles.css          # Styling (dark theme, animations)
+│   └── app.js              # JavaScript logic (flows, API calls)
+│
+├── templates/              # Flask templates
+│   └── index.html          # Landing page with animated branding
+│
+└── DOCUMENTATION.txt       # This file (complete documentation)
+```
+
+### Component Responsibilities
+
+| File | Role |
+|------|------|
+| `slim_bot.py` | Telegram bot that handles `/start`, join/leave detection, and trial reminders |
+| `api.py` | Flask API serving the Mini App and all `/api/*` endpoints |
+| `web_app.py` | Legacy Flask app for web-based verification (fallback mode) |
+| `storage.py` | Thread-safe JSON storage for trials, verifications, and invites |
+| `mini_app/` | Client-side Telegram Mini App (HTML/CSS/JS) |
+| `nginx.conf` | Production reverse proxy config (SSL, static files, API routing) |
+
+---
+
+## Technology Stack
+
+### Backend
+- **Python 3.10+**
+- **Flask ~3.0** - Web framework for API and legacy web app
+- **python-telegram-bot ~21.5** - Telegram Bot API wrapper
+- **Gunicorn ~21.2** - WSGI HTTP server for production
+- **PyJWT ~2.8** - JWT token handling for secure API auth
+- **aiohttp ~3.9** - Async HTTP client for API calls from bot
+- **requests ~2.32** - HTTP library for IP2Location API
+
+### Frontend (Mini App)
+- **HTML5** - Semantic structure
+- **CSS3** - Custom styling with animations
+- **Vanilla JavaScript** - No frameworks, Telegram WebApp SDK integration
+- **Inter Font** - Google Fonts for typography
+
+### Infrastructure
+- **Nginx** - Reverse proxy with SSL termination
+- **Let's Encrypt** - Free SSL certificates
+- **IP2Location.io** - IP geolocation and VPN detection API
+
+---
+
+## Project Workflow
+
+### User Flow (Happy Path)
+
+```
+User clicks /start in bot
+         │
+         ▼
+    ┌────────────────┐
+    │ Mini App       │──No──▶ Open fallback web page
+    │ supported?     │
+    └────────┬───────┘
+             │ Yes
+             ▼
+    ┌────────────────┐
+    │ Welcome Screen │
+    └────────┬───────┘
+             │
+             ▼
+    ┌────────────────┐
+    │ IP Verification│
+    └────────┬───────┘
+             │
+    ┌────────┴────────┐
+    │                 │
+    ▼                 ▼
+  VPN detected    Pass ──▶ Verification Form
+  Country blocked          │
+                           ▼
+                   Submit name, country, email
+                           │
+                           ▼
+                   Phone Verification (optional)
+                           │
+                           ▼
+                   Generate Invite Link
+                           │
+                           ▼
+                   User joins trial channel
+                           │
+                           ▼
+                   Trial starts
+                           │
+                           ▼
+                   Scheduled reminders
+                           │
+                           ▼
+                   Trial ends
+                           │
+                           ▼
+                   User removed from channel
+```
+
+### Trial Types
+
+| Type | Duration | When | Reminders |
+|------|----------|------|-----------|
+| **3-Day Trial** | 72 hours | Weekdays (Mon-Fri) | 24h, 48h, then end |
+| **5-Day Trial** | 120 hours | Weekends (Sat-Sun) | 24h, 72h, 96h, then end |
+
+---
+
+## Configuration & Environment Variables
+
+Create a `.env` file in the root directory (copy from `.env.example`):
+
+### Required Variables
+
+```bash
+# Telegram Bot Token (from @BotFather)
+BOT_TOKEN=your_bot_token_here
+
+# Trial Channel ID (negative number for channels, use @iDbot to get it)
+TRIAL_CHANNEL_ID=-100xxxxxxxxxx
+
+# Base URL for Mini App (must be HTTPS in production)
+BASE_URL=https://your-domain.com
+
+# API Secret for secure bot-to-API communication
+API_SECRET=generate_a_random_string_here
+```
+
+### IP2Location Configuration
+
+```bash
+# Primary API key (get free at https://www.ip2location.io/)
+IP2LOCATION_API_KEY=your_api_key
+
+# Optional backup API key for load balancing
+IP2LOCATION_API_KEY_2=optional_backup_key
+
+# Countries to block (ISO country codes)
+BLOCKED_COUNTRY_CODE=PK
+
+# Phone country codes to block
+BLOCKED_PHONE_COUNTRY_CODE=+91
+```
+
+### Trial Timing Configuration
+
+```bash
+# Trial durations in hours
+TRIAL_HOURS_3_DAY=72
+TRIAL_HOURS_5_DAY=120
+
+# Reminder timing in minutes
+REMINDER_1_MINUTES=1440   # 24 hours
+REMINDER_2_MINUTES=2880   # 48 hours
+TRIAL_END_3DAY_MINUTES=4320   # 72 hours
+
+REMINDER_3_MINUTES=4320   # 72 hours (5-day)
+REMINDER_4_MINUTES=5760   # 96 hours (5-day)
+TRIAL_END_5DAY_MINUTES=7200   # 120 hours
+
+# Invite link expiry
+INVITE_LINK_EXPIRY_HOURS=5
+
+# Timezone offset for weekend detection
+TIMEZONE_OFFSET_HOURS=0
+```
+
+### Support & Links
+
+```bash
+GIVEAWAY_CHANNEL_URL=https://t.me/Freya_Trades
+SUPPORT_CONTACT=@cogitosk
+FEEDBACK_FORM_URL=https://forms.gle/K7ubyn2tvzuYeHXn9
+SUPPORT_FORM_URL=https://forms.gle/CJbNczZ6BcKjk6Bz9
+```
+
+### Development Options
+
+```bash
+# Enable debug IP endpoint (NEVER in production!)
+ENABLE_DEBUG_IP=0
+
+# Flask port
+PORT=5000
+```
+
+---
+
+## Local Development Setup
+
+### Prerequisites
+
+- Python 3.10 or higher
+- pip (Python package manager)
+- A Telegram bot token (from @BotFather)
+- ngrok or similar (for HTTPS tunneling if testing Mini App)
+
+### Step 1: Clone and Install
+
+```bash
+# Clone the repository
+git clone <repository-url>
+cd add_or_remove_users
+
+# Create virtual environment
+python -m venv venv
+
+# Activate (Windows)
+venv\Scripts\activate
+
+# Activate (Linux/Mac)
+source venv/bin/activate
+
+# Install dependencies
+pip install -r requirements.txt
+```
+
+### Step 2: Configure Environment
+
+```bash
+# Copy example config
+cp .env.example .env
+
+# Edit .env with your values
+# Required: BOT_TOKEN, TRIAL_CHANNEL_ID, BASE_URL
+```
+
+### Step 3: Run Components
+
+You need to run **two processes** simultaneously:
+
+**Terminal 1 - API Server:**
+```bash
+python api.py
+# or for legacy web app:
+python web_app.py
+```
+
+**Terminal 2 - Telegram Bot:**
+```bash
+python slim_bot.py
+```
+
+### Step 4: Testing Mini App Locally
+
+For Mini App development, you need HTTPS. Use ngrok:
+
+```bash
+ngrok http 5000
+```
+
+Then update your `BASE_URL` in `.env` to the ngrok URL and configure it in @BotFather under Bot Settings -> Menu Button.
+
+---
+
+## Deployment
+
+### Production Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        Internet                              │
+└─────────────────────────┬───────────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────────┐
+│                    Nginx (Port 443)                          │
+│   - SSL termination (Let's Encrypt)                         │
+│   - Static files (mini_app/)                                │
+│   - Proxy /api/* to Flask                                   │
+│   - Proxy /trial to Flask                                   │
+└─────────────────────────┬───────────────────────────────────┘
+                          │
+          ┌───────────────┼───────────────┐
+          ▼               ▼               ▼
+┌─────────────────┐ ┌─────────────┐ ┌─────────────┐
+│   Gunicorn      │ │  slim_bot   │ │   JSON      │
+│   (api.py)      │ │  (polling)  │ │   Storage   │
+│   Port 5000     │ │             │ │   Files     │
+└─────────────────┘ └─────────────┘ └─────────────┘
+```
+
+### Deployment Steps (DigitalOcean/VPS)
+
+#### 1. Server Setup
+
+```bash
+# Update system
+sudo apt update && sudo apt upgrade -y
+
+# Install Python and dependencies
+sudo apt install python3 python3-pip python3-venv nginx certbot python3-certbot-nginx -y
+
+# Create app directory
+sudo mkdir -p /opt/freya-trial
+cd /opt/freya-trial
+
+# Upload code and configure
+# ... (copy files or git clone)
+
+# Create virtual environment
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+#### 2. Configure Nginx
+
+```bash
+# Copy nginx config
+sudo cp nginx.conf /etc/nginx/sites-available/freya
+
+# Edit to replace yourdomain.com with actual domain
+sudo nano /etc/nginx/sites-available/freya
+
+# Enable site
+sudo ln -s /etc/nginx/sites-available/freya /etc/nginx/sites-enabled/
+
+# Remove default
+sudo rm /etc/nginx/sites-enabled/default
+
+# Get SSL certificate
+sudo certbot --nginx -d yourdomain.com
+
+# Test and reload
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+#### 3. Create Systemd Services
+
+**API Service** (`/etc/systemd/system/freya-api.service`):
+```ini
+[Unit]
+Description=Freya Trial API
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/freya-trial
+Environment="PATH=/opt/freya-trial/venv/bin"
+ExecStart=/opt/freya-trial/venv/bin/gunicorn -w 2 -b 127.0.0.1:5000 api:app
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+**Bot Service** (`/etc/systemd/system/freya-bot.service`):
+```ini
+[Unit]
+Description=Freya Trial Bot
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/freya-trial
+Environment="PATH=/opt/freya-trial/venv/bin"
+ExecStart=/opt/freya-trial/venv/bin/python slim_bot.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+#### 4. Start Services
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable freya-api freya-bot
+sudo systemctl start freya-api freya-bot
+```
+
+#### 5. Verify Deployment
+
+```bash
+# Check service status
+sudo systemctl status freya-api
+sudo systemctl status freya-bot
+
+# Check logs
+sudo journalctl -u freya-api -f
+sudo journalctl -u freya-bot -f
+
+# Test health endpoint
+curl https://yourdomain.com/health
+```
+
+---
+
+## Switching Environments, Branches & Modes
+
+### Environment Switching
+
+| Environment | BASE_URL | ENABLE_DEBUG_IP | Notes |
+|-------------|----------|-----------------|-------|
+| **Development** | `https://xxxx.ngrok.io` | `1` | Use ngrok for HTTPS |
+| **Staging** | `https://staging.yourdomain.com` | `0` | Test before production |
+| **Production** | `https://yourdomain.com` | `0` | Never enable debug |
+
+### Running Different Modes
+
+**Mini App Mode (Recommended):**
+```bash
+# Run API backend
+python api.py
+
+# Run bot
+python slim_bot.py
+```
+
+**Legacy Web Mode (Fallback):**
+```bash
+# Run legacy web app
+python web_app.py
+
+# Run bot
+python slim_bot.py
+```
+
+**Full Bot Mode (Deprecated):**
+```bash
+# Run full bot with all handlers
+python bot.py
+```
+
+### Branch Strategy
+
+- `main` - Production-ready code
+- `develop` - Development and testing
+- `feature/*` - New features
+- `hotfix/*` - Emergency fixes
+
+---
+
+## Build, Run & Troubleshooting
+
+### Common Commands
+
+```bash
+# Install dependencies
+pip install -r requirements.txt
+
+# Run API server (development)
+python api.py
+
+# Run API server (production)
+gunicorn -w 2 -b 127.0.0.1:5000 api:app
+
+# Run bot
+python slim_bot.py
+
+# Run legacy web app
+python web_app.py
+```
+
+### Troubleshooting Guide
+
+| Issue | Cause | Solution |
+|-------|-------|----------|
+| Bot not responding | BOT_TOKEN invalid | Check token with @BotFather |
+| "TRIAL_CHANNEL_ID not set" | Missing config | Add channel ID to .env |
+| Mini App not loading | HTTPS required | Use ngrok or configure SSL |
+| VPN detection not working | Missing API key | Get key from ip2location.io |
+| Rate limit errors | Too many requests | Wait or adjust limits in code |
+| User can't join channel | Bot not admin | Make bot admin in channel |
+| Reminders not sending | Bot can't DM user | User must start bot first |
+
+### Log Locations
+
+```bash
+# Development (console output)
+python slim_bot.py 2>&1 | tee bot.log
+
+# Production (systemd)
+sudo journalctl -u freya-bot -f
+sudo journalctl -u freya-api -f
+```
+
+### Health Checks
+
+```bash
+# API health
+curl https://yourdomain.com/health
+
+# Expected response:
+{"status":"ok"}
+```
+
+---
+
+## Scripts, Automation & CI/CD
+
+### No CI/CD Currently Configured
+
+This repository does not have automated CI/CD pipelines. Deployment is manual.
+
+### Recommended CI/CD Setup (Future)
+
+```yaml
+# .github/workflows/deploy.yml (example)
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Deploy to server
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.HOST }}
+          username: root
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            cd /opt/freya-trial
+            git pull
+            source venv/bin/activate
+            pip install -r requirements.txt
+            sudo systemctl restart freya-api freya-bot
+```
+
+### Useful Scripts
+
+**Backup Data:**
+```bash
+#!/bin/bash
+# backup.sh
+DATE=$(date +%Y%m%d_%H%M%S)
+mkdir -p backups
+cp *.json backups/backup_$DATE/
+```
+
+**Restart Services:**
+```bash
+#!/bin/bash
+# restart.sh
+sudo systemctl restart freya-api freya-bot
+sudo systemctl status freya-api --no-pager
+sudo systemctl status freya-bot --no-pager
+```
+
+---
+
+## API Reference
+
+### Mini App API Endpoints (api.py)
+
+| Endpoint | Method | Description | Auth Required |
+|----------|--------|-------------|---------------|
+| `/` | GET | Serve Mini App | No |
+| `/health` | GET | Health check | No |
+| `/api/user-status` | POST | Check user trial status | Telegram initData |
+| `/api/verify-ip` | POST | Check IP for VPN/country | Telegram initData |
+| `/api/verify-submit` | POST | Submit verification form | Telegram initData |
+| `/api/verify-phone` | POST | Verify phone number | Telegram initData |
+| `/api/trial-invite` | POST | Generate invite link | Telegram initData |
+| `/api/trial-info` | GET | Get trial information | Telegram initData |
+| `/trial` | GET | Fallback verification page | No (uses tg_id param) |
+| `/api/fallback-verify` | POST | Fallback form submission | No (uses tg_id) |
+| `/api/get-verification` | GET | Bot fetches verification data | API_SECRET |
+
+### Request/Response Examples
+
+**Check User Status:**
+```bash
+curl -X POST https://yourdomain.com/api/user-status \
+  -H "X-Telegram-Init-Data: <initData>" \
+  -H "Content-Type: application/json"
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "status": "new",
+  "user_id": 123456789
+}
+```
+
+---
+
+## Data Storage
+
+### JSON Storage Files
+
+| File | Purpose | Structure |
+|------|---------|-----------|
+| `pending_verifications.json` | Temporary verification data | `{tg_id: {step1_ok, name, country...}}` |
+| `trial_users.json` | Audit log of all trials | `[{tg_id, join_time, trial_days...}]` |
+| `used_trials.json` | Users who've used trials | `{tg_id: {trial_ended_at, reason}}` |
+| `active_trials.json` | Currently active trials | `{tg_id: {join_time, total_hours, trial_end_at}}` |
+| `invites.json` | Generated invite links | `{tg_id: {link, expires_at}}` |
+| `startusersclicks.json` | /start command tracking | `{tg_id: {clicks, first_click_at...}}` |
+
+### Thread Safety
+
+All storage operations use `threading.Lock()` for safe concurrent access. The `storage.py` module handles all file I/O with atomic writes to prevent corruption.
+
+---
+
+## Security Features
+
+### Authentication
+
+- **Telegram initData validation** - HMAC-SHA256 verification per Telegram Web App protocol
+- **API_SECRET** - Optional secret for internal bot-to-API communication
+
+### Anti-Abuse Measures
+
+| Measure | Implementation |
+|---------|----------------|
+| **VPN/Proxy Detection** | IP2Location API checks |
+| **Country Blocking** | Configurable via BLOCKED_COUNTRY_CODE |
+| **Phone Blocking** | Configurable via BLOCKED_PHONE_COUNTRY_CODE |
+| **Rate Limiting** | IP-based (5 req/hour) and user-based (10 req/hour) |
+| **One-Trial-Per-User** | Tracked in used_trials.json |
+| **30-Day Cooldown** | After trial ends, must wait before re-trying |
+
+### Best Practices
+
+1. **Never commit `.env`** - Contains sensitive tokens
+2. **Keep `ENABLE_DEBUG_IP=0`** in production
+3. **Use strong API_SECRET** - Generate with `openssl rand -hex 32`
+4. **Regular backups** - JSON files contain user data
+5. **Monitor logs** - Watch for abuse patterns
+
+---
+
+## Quick Reference Commands
+
+```bash
+# Development
+python api.py              # Start API server
+python slim_bot.py         # Start Telegram bot
+
+# Production
+sudo systemctl start freya-api freya-bot
+sudo systemctl stop freya-api freya-bot
+sudo systemctl restart freya-api freya-bot
+sudo systemctl status freya-api freya-bot
+
+# Logs
+sudo journalctl -u freya-api -f
+sudo journalctl -u freya-bot -f
+
+# SSL renewal
+sudo certbot renew
+
+# Nginx
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+---
+
+Last Updated: December 2024
+
+Maintainer: Freya Quinn Team

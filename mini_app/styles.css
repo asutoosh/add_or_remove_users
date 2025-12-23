@@ -484,7 +484,8 @@ body {
 #screen-phone p,
 #screen-used p,
 #screen-success p,
-#screen-active p {
+#screen-active p,
+#screen-step1-success p {
     color: var(--text-secondary);
     font-size: 15px;
     line-height: 1.6;
@@ -495,6 +496,7 @@ body {
 #screen-used h2,
 #screen-success h2,
 #screen-active h2,
+#screen-step1-success h2,
 #screen-error h2,
 #screen-ip-error h2 {
     font-size: 24px;

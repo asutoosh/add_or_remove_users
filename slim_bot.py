@@ -97,10 +97,30 @@ BASE_URL = os.environ.get("BASE_URL", "https://freyatrades.live")
 # Validate required vars
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is required")
+# CRITICAL: Validate TRIAL_CHANNEL_ID - bot cannot function without valid channel
 if TRIAL_CHANNEL_ID == 0:
-    logger.warning("TRIAL_CHANNEL_ID not set!")
+    error_msg = (
+        "❌ CRITICAL ERROR: TRIAL_CHANNEL_ID not set!\n\n"
+        "Set TRIAL_CHANNEL_ID in your environment (e.g. .env file).\n"
+        "Get the channel ID by adding @iDbot to your channel.\n\n"
+        "Example: TRIAL_CHANNEL_ID=-1001234567890"
+    )
+    logger.error(error_msg)
+    raise ValueError(error_msg)
 
+if TRIAL_CHANNEL_ID >= 0:
+    error_msg = (
+        f"❌ CRITICAL ERROR: Invalid TRIAL_CHANNEL_ID: {TRIAL_CHANNEL_ID}\n\n"
+        "Channel IDs must be NEGATIVE numbers like -1001234567890.\n"
+        "Positive numbers are for private chats, not channels!\n\n"
+        "Get the correct ID by adding @iDbot to your channel."
+    )
+    logger.error(error_msg)
+    raise ValueError(error_msg)
+
+logger.info(f"✅ TRIAL_CHANNEL_ID validated: {TRIAL_CHANNEL_ID}")
 logger.info(f"Slim Bot starting - TRIAL_CHANNEL_ID: {TRIAL_CHANNEL_ID}")
+
 
 
 def _now_utc() -> datetime:
@@ -120,33 +140,32 @@ def _is_weekend(dt: datetime) -> bool:
 
 
 def validate_trial_data(trial_data: dict, user_id: int) -> bool:
-    """Validate trial data hasn't been tampered with."""
+    """Validate trial data hasn't been tampered with. Returns True if valid, False if tampered."""
     if "join_time" not in trial_data or "total_hours" not in trial_data:
+        logger.warning(f"validate_trial_data: Missing required fields for user {user_id}")
+        return False
+    
+    # SECURITY: Verify HMAC signature
+    if not _verify_trial_signature(trial_data, user_id):
+        logger.error(f"validate_trial_data: SIGNATURE VERIFICATION FAILED for user {user_id}")
         return False
     
     try:
+        total_hours = float(trial_data["total_hours"])
+        if total_hours not in [TRIAL_HOURS_3_DAY, TRIAL_HOURS_5_DAY]:
+            logger.warning(f"validate_trial_data: Invalid total_hours {total_hours} for user {user_id}")
+            return False
+        
         join_time = _parse_iso_to_utc(trial_data["join_time"])
-        total_hours = int(float(trial_data["total_hours"]))
+        now = _now_utc()
         
-        # Calculate expected end time
-        expected_end = join_time + timedelta(hours=total_hours)
+        if join_time > now:
+            logger.warning(f"validate_trial_data: Join time in future for user {user_id}")
+            return False
         
-        # If trial_end_at exists, it should match calculation (within tolerance)
-        if "trial_end_at" in trial_data:
-            claimed_end = _parse_iso_to_utc(trial_data["trial_end_at"])
-            time_diff = abs((claimed_end - expected_end).total_seconds())
-            if time_diff > TAMPERING_TOLERANCE_SECONDS:
-                logger.warning(f"Trial data tampering detected for user {user_id}")
-                return False
-        
-        # Check total_hours is valid
-        if total_hours not in [int(TRIAL_HOURS_3_DAY), int(TRIAL_HOURS_5_DAY)]:
-            # Allow float comparison tolerance or just strict check if they are exact
-            if abs(float(total_hours) - TRIAL_HOURS_3_DAY) > 0.1 and abs(float(total_hours) - TRIAL_HOURS_5_DAY) > 0.1:
-                logger.warning(f"Invalid total_hours ({total_hours}) for user {user_id}")
-                return False
-        
-        if join_time > _now_utc():
+        days_ago = (now - join_time).total_seconds() / 86400
+        if days_ago > 30:
+            logger.warning(f"validate_trial_data: Join time too old for user {user_id}")
             return False
             
         return True
@@ -545,36 +564,38 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     data["phone"] = phone
     set_pending_verification(user.id, data)
 
-    # Check if user already has a valid invite link
-    now = _now_utc()
-    existing_link = get_valid_invite_link(user.id, now)
+    # ATOMIC CHECK: Use new atomic function to prevent race condition
+    from storage import atomic_create_or_get_invite, finalize_invite_creation, cleanup_failed_invite_creation
     
-    if existing_link:
+    now = _now_utc()
+    expires_at_dt = now + timedelta(hours=INVITE_LINK_EXPIRY_HOURS)
+    
+    invite_data = {
+        "invite_created_at": now.isoformat(),
+        "invite_expires_at": expires_at_dt.isoformat(),
+    }
+    
+    result = atomic_create_or_get_invite(user.id, invite_data)
+    
+    if result["action"] == "existing":
         await update.message.reply_text(
-            f"✅ You already have an invite link!\n\n{existing_link}",
+            f"✅ You already have an invite link!\n\n{result['link']}",
             reply_markup=ReplyKeyboardRemove(),
         )
         return
 
+
     await update.message.reply_text("Verification 2 passed ✅. Generating your ONE-TIME invite link...")
 
     try:
-        expires_at_dt = now + timedelta(hours=INVITE_LINK_EXPIRY_HOURS)
         invite_link = await context.bot.create_chat_invite_link(
             chat_id=TRIAL_CHANNEL_ID,
             member_limit=1,
             expire_date=int(expires_at_dt.timestamp()),
         )
         
-        # Store invite metadata
-        set_invite_info(
-            user.id,
-            {
-                "invite_link": invite_link.invite_link,
-                "invite_created_at": now.isoformat(),
-                "invite_expires_at": expires_at_dt.isoformat(),
-            },
-        )
+        # Finalize the creation
+        finalize_invite_creation(user.id, invite_link.invite_link)
         
         await update.message.reply_text(
             f"Here is your one-time trial invite:\n\n{invite_link.invite_link}\n\n⚠️ Link expires in {INVITE_LINK_EXPIRY_HOURS} hours.",
@@ -595,6 +616,7 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         
     except Exception as e:
         logger.error(f"Failed to generate invite for {user.id}: {e}")
+        cleanup_failed_invite_creation(user.id)  # Clean up placeholder
         await update.message.reply_text(
             "Error generating invite link. Please contact support.",
             reply_markup=ReplyKeyboardRemove(),

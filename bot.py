@@ -110,6 +110,18 @@ if not API_SECRET:
         "Set API_SECRET in your .env file for production."
     )
 
+# Bot username for links (without @)
+BOT_USERNAME = os.environ.get("BOT_USERNAME", "Letttttmeeeeeeiiiiiiinbot")
+
+# Message formatting helper
+def format_message(text: str) -> str:
+    """
+    Format message with borders to make it less texty.
+    Adds ========== lines before and after the message.
+    """
+    border = "=" * 30
+    return f"{border}\n\n{text}\n\n{border}"
+
 # Validate required environment variables for production deployment
 if not BOT_TOKEN:
     error_msg = (
@@ -1084,13 +1096,11 @@ async def periodic_trial_cleanup(context: ContextTypes.DEFAULT_TYPE) -> None:
                 
                 # Notify user
                 try:
-                    await context.bot.send_message(
-                        chat_id=user_id,
-                        text=(
-                            "⛔ Your trial has finished. If you enjoyed the signals, you can upgrade "
-                            "to a paid plan to continue."
-                        ),
+                    message = format_message(
+                        "⛔ Your trial has finished. If you enjoyed the signals, you can upgrade "
+                        "to a paid plan to continue."
                     )
+                    await context.bot.send_message(chat_id=user_id, text=message)
                 except Exception:
                     pass
                 
@@ -1261,13 +1271,11 @@ async def trial_chat_member_update(update: Update, context: ContextTypes.DEFAULT
             }
         )
 
-        await context.bot.send_message(
-            chat_id=user.id,
-            text=(
-                f"✅ Your {trial_days}-day ({total_hours} hours) trial phase has started now!\n\n"
-                "You will receive reminders as your trial approaches the end."
-            ),
+        message = format_message(
+            f"✅ Your {trial_days}-day ({total_hours} hours) trial phase has started now!\n\n"
+            "You will receive reminders as your trial approaches the end."
         )
+        await context.bot.send_message(chat_id=user.id, text=message)
 
         jq = context.job_queue
         logger.info(f"Scheduling reminder jobs for user {user.id} ({trial_days}-day trial)")
@@ -1408,7 +1416,7 @@ async def trial_chat_member_update(update: Update, context: ContextTypes.DEFAULT
 
         # THIRD: Send message to user about leaving
         try:
-            leave_message = (
+            leave_message = format_message(
                 f"👋 You have left the trial channel.\n"
                 f"{usage_info}\n\n"
                 f"Your free {total_days}-day trial has been marked as consumed.\n\n"
@@ -1471,8 +1479,7 @@ async def _send_trial_reminder(context: ContextTypes.DEFAULT_TYPE, user_id: int,
 async def trial_reminder_3day_1(context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = context.job.data["user_id"]
     logger.info(f"trial_reminder_3day_1 job executing for user {user_id}")
-    await _send_trial_reminder(
-        context, user_id,
+    message = format_message(
         "Hey, it's Freya 💋\n\n"
         "You've been inside my 3-Day Trial for about a day now – I hope you've already seen how I structure my trades and risk.\n\n"
         "In this group you'll usually see:\n\n"
@@ -1481,16 +1488,15 @@ async def trial_reminder_3day_1(context: ContextTypes.DEFAULT_TYPE) -> None:
         "• 📊 Screenshots + short explanation so you can learn, not just copy\n\n"
         "If you missed anything, scroll up in the trial chat and check today's setups – everything is transparent, including wins and SL.\n\n"
         f"If you have any questions, you can always DM me here: {SUPPORT_CONTACT}\n\n"
-        "Stay tuned, more setups are coming. 💸",
-        reminder_name="24h_reminder_3day"
+        "Stay tuned, more setups are coming. 💸"
     )
+    await _send_trial_reminder(context, user_id, message, reminder_name="24h_reminder_3day")
 
 
 async def trial_reminder_3day_2(context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = context.job.data["user_id"]
     logger.info(f"trial_reminder_3day_2 job executing for user {user_id}")
-    await _send_trial_reminder(
-        context, user_id,
+    message = format_message(
         "Day 2 check-in 🧡\n\n"
         "You're almost two days into the trial now. You've probably noticed:\n\n"
         "• How I wait for clean setups, not random entries\n"
@@ -1502,31 +1508,29 @@ async def trial_reminder_3day_2(context: ContextTypes.DEFAULT_TYPE) -> None:
         "• Occasional market breakdowns & extra tips\n\n"
         "I'll send you a small reminder again when your trial is about to end, so you don't miss the chance to continue.\n\n"
         f"For now – just keep watching the signals and see if it matches your personality and schedule. ❤️\n\n"
-        f"If you already know you want to stay, message me 'PREMIUM' here: {SUPPORT_CONTACT}",
-        reminder_name="48h_reminder_3day"
+        f"If you already know you want to stay, message me 'PREMIUM' here: {SUPPORT_CONTACT}"
     )
+    await _send_trial_reminder(context, user_id, message, reminder_name="48h_reminder_3day")
 
 
 async def trial_reminder_5day_1(context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = context.job.data["user_id"]
     logger.info(f"trial_reminder_5day_1 job executing for user {user_id}")
-    await _send_trial_reminder(
-        context, user_id,
+    message = format_message(
         "⏱ 1 day (24 hours) has passed, 4 days remaining in your 5-day trial.\n\n"
-        f"💬 Enjoying the signals? Upgrade anytime by contacting {SUPPORT_CONTACT}",
-        reminder_name="24h_reminder_5day"
+        f"💬 Enjoying the signals? Upgrade anytime by contacting {SUPPORT_CONTACT}"
     )
+    await _send_trial_reminder(context, user_id, message, reminder_name="24h_reminder_5day")
 
 
 async def trial_reminder_5day_3(context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = context.job.data["user_id"]
     logger.info(f"trial_reminder_5day_3 job executing for user {user_id}")
-    await _send_trial_reminder(
-        context, user_id,
+    message = format_message(
         "⏱ 3 days (72 hours) have passed, 2 days remaining in your 5-day trial.\n\n"
-        f"💬 Questions about upgrading? Contact {SUPPORT_CONTACT}",
-        reminder_name="72h_reminder_5day"
+        f"💬 Want to continue after trial? Contact {SUPPORT_CONTACT}"
     )
+    await _send_trial_reminder(context, user_id, message, reminder_name="72h_reminder_5day")
 
 
 async def trial_reminder_5day_4(context: ContextTypes.DEFAULT_TYPE) -> None:

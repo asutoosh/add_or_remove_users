@@ -275,7 +275,29 @@ async function submitVerification(formData) {
             state.verificationData = formData;
             hapticFeedback('success');
             hideLoading();
-            showScreen('phone');
+            
+            showScreen('step1-success');
+            
+            // Redirect to bot
+            const botUrl = "https://t.me/Letttttmeeeeeeiiiiiiinbot";
+            const redirectToBot = () => {
+                if (TG) {
+                    TG.openTelegramLink(botUrl);
+                    setTimeout(() => {
+                        TG.close();
+                    }, 500);
+                } else {
+                    window.location.href = botUrl;
+                }
+            };
+
+            // Auto redirect after 2s
+            setTimeout(redirectToBot, 2000);
+            
+            // Also enable button
+            const btn = document.getElementById('btn-open-bot');
+            if (btn) btn.onclick = redirectToBot;
+
             return true;
         } else {
             hideLoading();
