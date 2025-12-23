@@ -335,6 +335,43 @@ async def continue_verification_callback(update: Update, context: ContextTypes.D
         )
         return
     
+    # Check if user already used their trial (prevent infinite invites)
+    if has_used_trial(user.id):
+        await query.edit_message_text(
+            "You have already used your free trial.\n\n"
+            f"🎁 Join giveaways: {GIVEAWAY_CHANNEL_URL}\n"
+            f"💬 Upgrade: {SUPPORT_CONTACT}",
+        )
+        return
+    
+    # Check if user already has active trial
+    active = get_active_trial(user.id)
+    if active and "trial_end_at" in active:
+        try:
+            end_at = _parse_iso_to_utc(active["trial_end_at"])
+            if _now_utc() < end_at:
+                remaining = (end_at - _now_utc()).total_seconds() / 3600
+                await query.edit_message_text(
+                    f"✅ You already have an active trial!\n\n"
+                    f"⏳ Time remaining: {remaining:.1f} hours\n\n"
+                    f"💬 Questions? DM {SUPPORT_CONTACT}",
+                )
+                return
+        except Exception:
+            pass
+    
+    # Check if user already has a valid (non-expired) invite link
+    from storage import get_valid_invite_link
+    existing_link = get_valid_invite_link(user.id, _now_utc())
+    if existing_link:
+        await query.edit_message_text(
+            f"✅ **You already have an invite link!**\n\n"
+            f"Tap below to join:\n{existing_link}\n\n"
+            f"⚠️ Use this link before it expires.",
+            parse_mode="Markdown"
+        )
+        return
+    
     # Verification passed! Generate invite link
     try:
         now = _now_utc()

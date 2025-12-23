@@ -311,6 +311,19 @@ async def start_trial_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return
 
+    # CRITICAL: Check if user already has a valid invite link (prevents infinite invite glitch)
+    # Users were exploiting: start → get free trial → open page → done → get invite → start again...
+    now = _now_utc()
+    existing_link = get_valid_invite_link(tg_id, now)
+    if existing_link:
+        await query.edit_message_text(
+            "✅ You already have a valid trial invite link!\n\n"
+            f"🔗 {existing_link}\n\n"
+            "Please use this link to join the trial channel.\n"
+            "If you have any issues, use /support to contact us.",
+        )
+        return
+
     # Check if user has an ACTIVE trial (currently in trial period)
     active_trial = get_active_trial(tg_id)
     if active_trial and "join_time" in active_trial and "total_hours" in active_trial:

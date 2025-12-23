@@ -2,11 +2,12 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Freya Quinn</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Freya Quinn - Premium Trading Signals</title>
+    <meta name="description" content="Get access to premium trading signals with Freya Quinn. Join thousands of successful traders.">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@800;900&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
     <style>
         * {
             margin: 0;
@@ -14,20 +15,19 @@
             box-sizing: border-box;
         }
 
-        body {
-            background-color: #000;
-            min-height: 100vh;
-            min-height: 100dvh;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            align-items: center;
-            overflow: hidden;
-            font-family: 'Inter', 'Arial Black', sans-serif;
-            -webkit-font-smoothing: antialiased;
+        html {
+            scroll-behavior: smooth;
         }
 
-        /* Blue glow - bottom right */
+        body {
+            background-color: #000;
+            color: #ffffff;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            -webkit-font-smoothing: antialiased;
+            overflow-x: hidden;
+        }
+
+        /* Background effects */
         .background-glow {
             position: fixed;
             bottom: -30%;
@@ -39,17 +39,29 @@
             pointer-events: none;
         }
 
-        .main-content {
-            position: relative;
-            z-index: 1;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            gap: clamp(2rem, 5vh, 4rem);
-            padding: 1rem;
+        .background-glow-top {
+            position: fixed;
+            top: -30%;
+            left: -20%;
+            width: 100vw;
+            height: 100vh;
+            background: radial-gradient(ellipse, rgba(80, 20, 120, 0.3) 0%, rgba(0,0,0,0) 60%);
+            z-index: 0;
+            pointer-events: none;
         }
 
-        /* Text Container */
+        /* Hero Section */
+        .hero {
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            position: relative;
+            z-index: 1;
+            padding: 2rem 1rem;
+        }
+
         .text-container {
             display: flex;
             flex-wrap: wrap;
@@ -62,24 +74,14 @@
             letter-spacing: -0.03em;
             line-height: 1.1;
             min-height: 1.2em;
-            gap: 0;
-            flex-direction: row;
         }
 
-        /* Individual Letter */
         .letter {
             display: inline-block;
             position: relative;
             transition: color 0.15s ease;
-            white-space: nowrap;
         }
 
-        /* Space handling */
-        .letter.space {
-            width: 0.3em;
-        }
-
-        /* Rolling state */
         .letter.rolling {
             color: transparent;
         }
@@ -96,114 +98,222 @@
         }
 
         @keyframes roll {
-            0% { 
-                transform: translate(-50%, -150%); 
-                opacity: 0.3;
-            }
-            25% {
-                opacity: 0.8;
-            }
-            50% { 
-                transform: translate(-50%, -50%); 
-                opacity: 1;
-            }
-            75% {
-                opacity: 0.8;
-            }
-            100% { 
-                transform: translate(-50%, 50%); 
-                opacity: 0.3;
-            }
+            0% { transform: translate(-50%, -150%); opacity: 0.3; }
+            50% { transform: translate(-50%, -50%); opacity: 1; }
+            100% { transform: translate(-50%, 50%); opacity: 0.3; }
         }
 
-        /* Stopped letter pop-in */
         .letter.stopped {
             animation: popIn 0.2s ease-out forwards;
         }
 
         @keyframes popIn {
-            0% { 
-                transform: scale(1.2);
-                opacity: 0.8;
-            }
-            100% { 
-                transform: scale(1);
-                opacity: 1;
-            }
+            0% { transform: scale(1.2); opacity: 0.8; }
+            100% { transform: scale(1); opacity: 1; }
         }
 
-        /* Telegram Widget Container */
-        .btn-container {
+        .hero-tagline {
+            font-size: clamp(1rem, 2.5vw, 1.5rem);
+            color: rgba(255,255,255,0.7);
+            margin-top: 1.5rem;
+            text-align: center;
             opacity: 0;
-            transform: translateY(10px);
-            transition: all 0.5s ease;
-            width: 100%;
-            max-width: 550px;
-            padding: 0 1rem;
+            transform: translateY(20px);
+            transition: all 0.6s ease;
         }
 
-        .btn-container.visible {
+        .hero-tagline.visible {
             opacity: 1;
             transform: translateY(0);
         }
 
-        /* Style the telegram widget iframe */
-        .btn-container iframe {
-            border-radius: 12px;
-            max-width: 100%;
+        .cta-button {
+            margin-top: 2.5rem;
+            padding: 1rem 3rem;
+            font-size: 1.1rem;
+            font-weight: 700;
+            color: #fff;
+            background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+            border: none;
+            border-radius: 999px;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-block;
+            opacity: 0;
+            transform: translateY(20px);
+            transition: all 0.6s ease, transform 0.2s ease, box-shadow 0.2s ease;
+            box-shadow: 0 4px 20px rgba(59, 130, 246, 0.4);
         }
 
-        /* Replay hint */
-        .hint {
-            position: fixed;
-            bottom: 1.5rem;
-            color: #333;
-            font-size: 0.7rem;
-            letter-spacing: 0.1em;
+        .cta-button.visible {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        .cta-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 30px rgba(59, 130, 246, 0.6);
+        }
+
+        .scroll-indicator {
+            position: absolute;
+            bottom: 2rem;
+            left: 50%;
+            transform: translateX(-50%);
+            color: rgba(255,255,255,0.4);
+            font-size: 0.8rem;
             text-transform: uppercase;
+            letter-spacing: 0.1em;
+            animation: bounce 2s infinite;
         }
 
-        /* Line break - forces new line */
-        .line-break {
-            flex-basis: 100%;
-            width: 100%;
-            height: 0;
-            display: none;
+        @keyframes bounce {
+            0%, 100% { transform: translateX(-50%) translateY(0); }
+            50% { transform: translateX(-50%) translateY(10px); }
         }
 
-        /* Responsive - Mobile */
+        /* Sections */
+        section {
+            position: relative;
+            z-index: 1;
+            padding: 5rem 1.5rem;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .section-title {
+            font-size: clamp(2rem, 5vw, 3rem);
+            font-weight: 800;
+            text-align: center;
+            margin-bottom: 1rem;
+            background: linear-gradient(135deg, #fff, rgba(255,255,255,0.7));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .section-subtitle {
+            text-align: center;
+            color: rgba(255,255,255,0.6);
+            font-size: 1.1rem;
+            margin-bottom: 3rem;
+        }
+
+        /* Features Grid */
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 2rem;
+        }
+
+        .feature-card {
+            background: rgba(255,255,255,0.03);
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 20px;
+            padding: 2rem;
+            transition: all 0.3s ease;
+        }
+
+        .feature-card:hover {
+            background: rgba(255,255,255,0.06);
+            border-color: rgba(255,255,255,0.15);
+            transform: translateY(-5px);
+        }
+
+        .feature-icon {
+            font-size: 2.5rem;
+            margin-bottom: 1rem;
+        }
+
+        .feature-title {
+            font-size: 1.3rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+        }
+
+        .feature-desc {
+            color: rgba(255,255,255,0.6);
+            line-height: 1.6;
+        }
+
+        /* Stats Section */
+        .stats-section {
+            background: linear-gradient(180deg, rgba(59,130,246,0.1) 0%, transparent 100%);
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 2rem;
+            text-align: center;
+        }
+
+        .stat-item {
+            padding: 1.5rem;
+        }
+
+        .stat-number {
+            font-size: clamp(2.5rem, 6vw, 4rem);
+            font-weight: 900;
+            background: linear-gradient(135deg, #22c55e, #3b82f6);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .stat-label {
+            color: rgba(255,255,255,0.6);
+            font-size: 1rem;
+            margin-top: 0.5rem;
+        }
+
+        /* CTA Section */
+        .cta-section {
+            text-align: center;
+            padding: 6rem 1.5rem;
+        }
+
+        .cta-section .section-title {
+            margin-bottom: 1.5rem;
+        }
+
+        .cta-section p {
+            color: rgba(255,255,255,0.7);
+            font-size: 1.2rem;
+            margin-bottom: 2rem;
+        }
+
+        /* Footer */
+        footer {
+            position: relative;
+            z-index: 1;
+            text-align: center;
+            padding: 2rem;
+            color: rgba(255,255,255,0.4);
+            font-size: 0.9rem;
+            border-top: 1px solid rgba(255,255,255,0.08);
+        }
+
+        footer a {
+            color: rgba(255,255,255,0.6);
+            text-decoration: none;
+        }
+
+        footer a:hover {
+            color: #fff;
+        }
+
+        /* Responsive */
         @media (max-width: 768px) {
             .text-container {
-                font-size: clamp(3.5rem, 15vw, 5.5rem);
-                flex-direction: row;
-                flex-wrap: wrap;
-                justify-content: center;
-                align-items: flex-start;
+                font-size: clamp(2.5rem, 12vw, 4rem);
             }
             
-            .line-break {
-                display: block;
-                flex-basis: 100%;
-                width: 100%;
-                height: 0;
-                order: 5;
-            }
-            
-            .btn-container {
-                max-width: 100%;
-                padding: 0 0.5rem;
-            }
-        }
-
-        @media (max-width: 480px) {
-            .text-container {
-                font-size: clamp(3rem, 18vw, 4.5rem);
-            }
-        }
-
-        @media (max-height: 500px) {
-            .main-content {
-                gap: 1.5rem;
+            section {
+                padding: 3rem 1rem;
             }
         }
     </style>
@@ -211,38 +321,125 @@
 <body>
 
     <div class="background-glow"></div>
+    <div class="background-glow-top"></div>
 
-    <div class="main-content">
+    <!-- Hero Section -->
+    <section class="hero">
         <div class="text-container" id="target-text"></div>
-        
-        <div class="btn-container" id="btn-container">
-            <script async src="https://telegram.org/js/telegram-widget.js?22" data-telegram-post="Freya_Trades/45" data-width="100%"></script>
-        </div>
-    </div>
+        <p class="hero-tagline" id="tagline">Premium Trading Signals • Real-Time Alerts • Proven Results</p>
+        <a href="https://t.me/FreyaQuinnBot" class="cta-button" id="cta-btn">Start Free Trial</a>
+        <div class="scroll-indicator">↓ Scroll to learn more</div>
+    </section>
 
-    <div class="hint">tap to replay</div>
+    <!-- Features Section -->
+    <section id="features">
+        <div class="container">
+            <h2 class="section-title">Why Traders Choose Us</h2>
+            <p class="section-subtitle">Everything you need to succeed in the markets</p>
+            
+            <div class="features-grid">
+                <div class="feature-card">
+                    <div class="feature-icon">📊</div>
+                    <h3 class="feature-title">Real-Time Signals</h3>
+                    <p class="feature-desc">Get instant alerts for high-probability trade setups delivered directly to your Telegram.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">🎯</div>
+                    <h3 class="feature-title">Precise Entry & Exit</h3>
+                    <p class="feature-desc">Every signal includes exact entry price, stop loss, and take profit targets.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">🔒</div>
+                    <h3 class="feature-title">Risk Management</h3>
+                    <p class="feature-desc">Built-in risk management guidelines to protect your capital on every trade.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">📱</div>
+                    <h3 class="feature-title">Mobile Friendly</h3>
+                    <p class="feature-desc">Trade from anywhere with signals delivered to your phone via Telegram.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">⚡</div>
+                    <h3 class="feature-title">Fast Execution</h3>
+                    <p class="feature-desc">Signals are sent the moment opportunities are identified for optimal entries.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">🏆</div>
+                    <h3 class="feature-title">Proven Track Record</h3>
+                    <p class="feature-desc">Verifiable results with transparent performance tracking.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Stats Section -->
+    <section class="stats-section">
+        <div class="container">
+            <h2 class="section-title">Our Numbers Speak</h2>
+            <p class="section-subtitle">Join thousands of profitable traders</p>
+            
+            <div class="stats-grid">
+                <div class="stat-item">
+                    <div class="stat-number">85%</div>
+                    <div class="stat-label">Win Rate</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-number">5K+</div>
+                    <div class="stat-label">Active Traders</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-number">150+</div>
+                    <div class="stat-label">Signals/Month</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-number">24/7</div>
+                    <div class="stat-label">Market Coverage</div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- CTA Section -->
+    <section class="cta-section">
+        <div class="container">
+            <h2 class="section-title">Ready to Start Trading Smarter?</h2>
+            <p>Get 3 days of free access to our premium signals. No credit card required.</p>
+            <a href="https://t.me/FreyaQuinnBot" class="cta-button visible">Start Your Free Trial →</a>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer>
+        <p>&copy; 2024 Freya Quinn. All rights reserved. | <a href="https://t.me/FreyaQuinnBot">Telegram</a></p>
+    </footer>
 
     <script>
         const text = "FREYA QUINN";
         const container = document.getElementById('target-text');
-        const btnContainer = document.getElementById('btn-container');
-        const speed = 120;
+        const tagline = document.getElementById('tagline');
+        const ctaBtn = document.getElementById('cta-btn');
+        const speed = 100;
         const initialDelay = 300;
 
         function initText() {
             container.innerHTML = '';
-            btnContainer.classList.remove('visible');
+            tagline.classList.remove('visible');
+            ctaBtn.classList.remove('visible');
             
-            const isMobileNow = window.innerWidth <= 768;
             const words = text.split(' ');
             
             words.forEach((word, wordIndex) => {
-                // Create word container for better control
                 const wordContainer = document.createElement('span');
                 wordContainer.style.display = 'inline-flex';
                 
-                const wordChars = word.split('');
-                wordChars.forEach((char) => {
+                if (wordIndex > 0) {
+                    const space = document.createElement('span');
+                    space.innerHTML = '&nbsp;';
+                    space.style.width = '0.3em';
+                    container.appendChild(space);
+                }
+                
+                word.split('').forEach((char) => {
                     const span = document.createElement('span');
                     span.innerText = char;
                     span.className = 'letter rolling';
@@ -251,13 +448,6 @@
                 });
                 
                 container.appendChild(wordContainer);
-                
-                // Add line break after first word (FREYA) on mobile
-                if (isMobileNow && wordIndex === 0) {
-                    const lineBreak = document.createElement('span');
-                    lineBreak.className = 'line-break';
-                    container.appendChild(lineBreak);
-                }
             });
 
             startAnimation();
@@ -275,18 +465,21 @@
                 }, initialDelay + (index * speed));
             });
 
-            // Show button after all letters stop
             setTimeout(() => {
-                btnContainer.classList.add('visible');
+                tagline.classList.add('visible');
             }, totalTime + 200);
+
+            setTimeout(() => {
+                ctaBtn.classList.add('visible');
+            }, totalTime + 500);
         }
 
         // Run on load
         initText();
 
-        // Click to replay (but not on the button)
-        document.body.addEventListener('click', (e) => {
-            if (!e.target.closest('.enter-btn')) {
+        // Replay on hero click
+        document.querySelector('.hero').addEventListener('click', (e) => {
+            if (!e.target.closest('.cta-button')) {
                 initText();
             }
         });

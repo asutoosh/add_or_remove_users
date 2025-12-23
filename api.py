@@ -232,14 +232,25 @@ def require_telegram_auth(f):
         
         # Validate initData if provided
         user_data = None
+        validated_via_init_data = False
         if init_data:
             user_data = validate_init_data(init_data)
             if user_data:
                 tg_id = user_data.get("id")
+                validated_via_init_data = True
         
         # Must have tg_id
         if not tg_id:
             return jsonify({"error": "Authentication required"}), 401
+        
+        # SECURITY: If tg_id provided without valid initData, add extra IP rate limiting
+        # This prevents attackers from spamming endpoints with arbitrary tg_ids
+        if not validated_via_init_data:
+            ip = get_client_ip()
+            # Much stricter rate limit for non-validated requests: 3 per 10 minutes per IP
+            if not check_ip_rate_limit(ip, max_requests=3, window_minutes=10):
+                logger.warning(f"Rate limited IP {ip} for unauthenticated tg_id access")
+                return jsonify({"error": "Too many requests"}), 429
         
         # Rate limit by tg_id
         if not check_tg_rate_limit(tg_id):
@@ -248,6 +259,7 @@ def require_telegram_auth(f):
         # Add to request context
         request.tg_id = tg_id
         request.tg_user = user_data
+        request.validated_via_init_data = validated_via_init_data
         
         return f(*args, **kwargs)
     return decorated
@@ -345,9 +357,39 @@ def check_ip_status(ip: str) -> Tuple[bool, bool, bool, str]:
 # =============================================================================
 
 @app.route("/")
-def serve_mini_app():
-    """Serve the Mini App."""
-    return send_from_directory(app.static_folder, 'index.html')
+def serve_home():
+    """
+    Serve different content based on request source:
+    - Telegram Mini App: serve mini_app/index.html
+    - Regular browser: serve templates/index.html (landing page)
+    """
+    # Check if request is from Telegram
+    # 1. Check for tgWebAppData in URL (Mini App passes this)
+    # 2. Check User-Agent for Telegram
+    # 3. Check for tg_id parameter (fallback flow)
+    
+    is_telegram = False
+    
+    # Check query params for Telegram Mini App data
+    if request.args.get('tgWebAppData') or request.args.get('tgWebAppStartParam'):
+        is_telegram = True
+    
+    # Check User-Agent for Telegram client
+    user_agent = request.headers.get('User-Agent', '').lower()
+    if 'telegram' in user_agent or 'tg' in user_agent:
+        is_telegram = True
+    
+    # Check Referer for Telegram
+    referer = request.headers.get('Referer', '').lower()
+    if 't.me' in referer or 'telegram' in referer:
+        is_telegram = True
+    
+    if is_telegram:
+        # Serve Mini App for Telegram users
+        return send_from_directory(app.static_folder, 'index.html')
+    else:
+        # Serve landing page for regular browsers
+        return send_from_directory('templates', 'index.html')
 
 
 @app.route("/health")
@@ -538,6 +580,15 @@ def api_trial_invite():
     """Generate invite link for verified user."""
     tg_id = request.tg_id
     now = _now_utc()
+    
+    # SECURITY: This sensitive endpoint should only be accessible via valid initData
+    # or the bot's fallback flow (which requires phone verification anyway)
+    if not getattr(request, 'validated_via_init_data', False):
+        logger.warning(f"Trial invite attempt without initData for tg_id={tg_id}")
+        return jsonify({
+            "success": False,
+            "error": "Please use the Telegram app to access this feature",
+        }), 403
     
     # Check if already used trial
     if has_used_trial(tg_id):
@@ -742,12 +793,201 @@ def trial_page():
             <input type="text" id="name" placeholder="Your Name" required>
             <select id="country" required>
                 <option value="">Select Country</option>
-                <option value="United States">United States</option>
-                <option value="United Kingdom">United Kingdom</option>
-                <option value="Canada">Canada</option>
+                <option value="Afghanistan">Afghanistan</option>
+                <option value="Albania">Albania</option>
+                <option value="Algeria">Algeria</option>
+                <option value="Andorra">Andorra</option>
+                <option value="Angola">Angola</option>
+                <option value="Antigua and Barbuda">Antigua and Barbuda</option>
+                <option value="Argentina">Argentina</option>
+                <option value="Armenia">Armenia</option>
                 <option value="Australia">Australia</option>
-                <option value="Germany">Germany</option>
+                <option value="Austria">Austria</option>
+                <option value="Azerbaijan">Azerbaijan</option>
+                <option value="Bahamas">Bahamas</option>
+                <option value="Bahrain">Bahrain</option>
+                <option value="Bangladesh">Bangladesh</option>
+                <option value="Barbados">Barbados</option>
+                <option value="Belarus">Belarus</option>
+                <option value="Belgium">Belgium</option>
+                <option value="Belize">Belize</option>
+                <option value="Benin">Benin</option>
+                <option value="Bhutan">Bhutan</option>
+                <option value="Bolivia">Bolivia</option>
+                <option value="Bosnia and Herzegovina">Bosnia and Herzegovina</option>
+                <option value="Botswana">Botswana</option>
+                <option value="Brazil">Brazil</option>
+                <option value="Brunei">Brunei</option>
+                <option value="Bulgaria">Bulgaria</option>
+                <option value="Burkina Faso">Burkina Faso</option>
+                <option value="Burundi">Burundi</option>
+                <option value="Cambodia">Cambodia</option>
+                <option value="Cameroon">Cameroon</option>
+                <option value="Canada">Canada</option>
+                <option value="Cape Verde">Cape Verde</option>
+                <option value="Central African Republic">Central African Republic</option>
+                <option value="Chad">Chad</option>
+                <option value="Chile">Chile</option>
+                <option value="China">China</option>
+                <option value="Colombia">Colombia</option>
+                <option value="Comoros">Comoros</option>
+                <option value="Congo">Congo</option>
+                <option value="Costa Rica">Costa Rica</option>
+                <option value="Croatia">Croatia</option>
+                <option value="Cuba">Cuba</option>
+                <option value="Cyprus">Cyprus</option>
+                <option value="Czech Republic">Czech Republic</option>
+                <option value="Denmark">Denmark</option>
+                <option value="Djibouti">Djibouti</option>
+                <option value="Dominica">Dominica</option>
+                <option value="Dominican Republic">Dominican Republic</option>
+                <option value="East Timor">East Timor</option>
+                <option value="Ecuador">Ecuador</option>
+                <option value="Egypt">Egypt</option>
+                <option value="El Salvador">El Salvador</option>
+                <option value="Equatorial Guinea">Equatorial Guinea</option>
+                <option value="Eritrea">Eritrea</option>
+                <option value="Estonia">Estonia</option>
+                <option value="Eswatini">Eswatini</option>
+                <option value="Ethiopia">Ethiopia</option>
+                <option value="Fiji">Fiji</option>
+                <option value="Finland">Finland</option>
                 <option value="France">France</option>
+                <option value="Gabon">Gabon</option>
+                <option value="Gambia">Gambia</option>
+                <option value="Georgia">Georgia</option>
+                <option value="Germany">Germany</option>
+                <option value="Ghana">Ghana</option>
+                <option value="Greece">Greece</option>
+                <option value="Grenada">Grenada</option>
+                <option value="Guatemala">Guatemala</option>
+                <option value="Guinea">Guinea</option>
+                <option value="Guinea-Bissau">Guinea-Bissau</option>
+                <option value="Guyana">Guyana</option>
+                <option value="Haiti">Haiti</option>
+                <option value="Honduras">Honduras</option>
+                <option value="Hungary">Hungary</option>
+                <option value="Iceland">Iceland</option>
+                <option value="India">India</option>
+                <option value="Indonesia">Indonesia</option>
+                <option value="Iran">Iran</option>
+                <option value="Iraq">Iraq</option>
+                <option value="Ireland">Ireland</option>
+                <option value="Israel">Israel</option>
+                <option value="Italy">Italy</option>
+                <option value="Ivory Coast">Ivory Coast</option>
+                <option value="Jamaica">Jamaica</option>
+                <option value="Japan">Japan</option>
+                <option value="Jordan">Jordan</option>
+                <option value="Kazakhstan">Kazakhstan</option>
+                <option value="Kenya">Kenya</option>
+                <option value="Kiribati">Kiribati</option>
+                <option value="Kuwait">Kuwait</option>
+                <option value="Kyrgyzstan">Kyrgyzstan</option>
+                <option value="Laos">Laos</option>
+                <option value="Latvia">Latvia</option>
+                <option value="Lebanon">Lebanon</option>
+                <option value="Lesotho">Lesotho</option>
+                <option value="Liberia">Liberia</option>
+                <option value="Libya">Libya</option>
+                <option value="Liechtenstein">Liechtenstein</option>
+                <option value="Lithuania">Lithuania</option>
+                <option value="Luxembourg">Luxembourg</option>
+                <option value="Madagascar">Madagascar</option>
+                <option value="Malawi">Malawi</option>
+                <option value="Malaysia">Malaysia</option>
+                <option value="Maldives">Maldives</option>
+                <option value="Mali">Mali</option>
+                <option value="Malta">Malta</option>
+                <option value="Marshall Islands">Marshall Islands</option>
+                <option value="Mauritania">Mauritania</option>
+                <option value="Mauritius">Mauritius</option>
+                <option value="Mexico">Mexico</option>
+                <option value="Micronesia">Micronesia</option>
+                <option value="Moldova">Moldova</option>
+                <option value="Monaco">Monaco</option>
+                <option value="Mongolia">Mongolia</option>
+                <option value="Montenegro">Montenegro</option>
+                <option value="Morocco">Morocco</option>
+                <option value="Mozambique">Mozambique</option>
+                <option value="Myanmar">Myanmar</option>
+                <option value="Namibia">Namibia</option>
+                <option value="Nauru">Nauru</option>
+                <option value="Nepal">Nepal</option>
+                <option value="Netherlands">Netherlands</option>
+                <option value="New Zealand">New Zealand</option>
+                <option value="Nicaragua">Nicaragua</option>
+                <option value="Niger">Niger</option>
+                <option value="Nigeria">Nigeria</option>
+                <option value="North Korea">North Korea</option>
+                <option value="North Macedonia">North Macedonia</option>
+                <option value="Norway">Norway</option>
+                <option value="Oman">Oman</option>
+                <option value="Pakistan">Pakistan</option>
+                <option value="Palau">Palau</option>
+                <option value="Palestine">Palestine</option>
+                <option value="Panama">Panama</option>
+                <option value="Papua New Guinea">Papua New Guinea</option>
+                <option value="Paraguay">Paraguay</option>
+                <option value="Peru">Peru</option>
+                <option value="Philippines">Philippines</option>
+                <option value="Poland">Poland</option>
+                <option value="Portugal">Portugal</option>
+                <option value="Qatar">Qatar</option>
+                <option value="Romania">Romania</option>
+                <option value="Russia">Russia</option>
+                <option value="Rwanda">Rwanda</option>
+                <option value="Saint Kitts and Nevis">Saint Kitts and Nevis</option>
+                <option value="Saint Lucia">Saint Lucia</option>
+                <option value="Saint Vincent and the Grenadines">Saint Vincent and the Grenadines</option>
+                <option value="Samoa">Samoa</option>
+                <option value="San Marino">San Marino</option>
+                <option value="Sao Tome and Principe">Sao Tome and Principe</option>
+                <option value="Saudi Arabia">Saudi Arabia</option>
+                <option value="Senegal">Senegal</option>
+                <option value="Serbia">Serbia</option>
+                <option value="Seychelles">Seychelles</option>
+                <option value="Sierra Leone">Sierra Leone</option>
+                <option value="Singapore">Singapore</option>
+                <option value="Slovakia">Slovakia</option>
+                <option value="Slovenia">Slovenia</option>
+                <option value="Solomon Islands">Solomon Islands</option>
+                <option value="Somalia">Somalia</option>
+                <option value="South Africa">South Africa</option>
+                <option value="South Korea">South Korea</option>
+                <option value="South Sudan">South Sudan</option>
+                <option value="Spain">Spain</option>
+                <option value="Sri Lanka">Sri Lanka</option>
+                <option value="Sudan">Sudan</option>
+                <option value="Suriname">Suriname</option>
+                <option value="Sweden">Sweden</option>
+                <option value="Switzerland">Switzerland</option>
+                <option value="Syria">Syria</option>
+                <option value="Taiwan">Taiwan</option>
+                <option value="Tajikistan">Tajikistan</option>
+                <option value="Tanzania">Tanzania</option>
+                <option value="Thailand">Thailand</option>
+                <option value="Togo">Togo</option>
+                <option value="Tonga">Tonga</option>
+                <option value="Trinidad and Tobago">Trinidad and Tobago</option>
+                <option value="Tunisia">Tunisia</option>
+                <option value="Turkey">Turkey</option>
+                <option value="Turkmenistan">Turkmenistan</option>
+                <option value="Tuvalu">Tuvalu</option>
+                <option value="Uganda">Uganda</option>
+                <option value="Ukraine">Ukraine</option>
+                <option value="United Arab Emirates">United Arab Emirates</option>
+                <option value="United Kingdom">United Kingdom</option>
+                <option value="United States">United States</option>
+                <option value="Uruguay">Uruguay</option>
+                <option value="Uzbekistan">Uzbekistan</option>
+                <option value="Vanuatu">Vanuatu</option>
+                <option value="Vatican City">Vatican City</option>
+                <option value="Venezuela">Venezuela</option>
+                <option value="Vietnam">Vietnam</option>
+                <option value="Yemen">Yemen</option>
+                <option value="Zambia">Zambia</option>
+                <option value="Zimbabwe">Zimbabwe</option>
                 <option value="Other">Other</option>
             </select>
             <input type="email" id="email" placeholder="Email (optional)">
@@ -797,7 +1037,15 @@ def api_fallback_verify():
     """
     Simple fallback verification for non-Mini App clients.
     Stores step1_ok without requiring Telegram auth (uses tg_id from form).
+    
+    SECURITY: Rate limited by IP to prevent abuse.
     """
+    # SECURITY: Strict IP-based rate limiting to prevent abuse
+    ip = get_client_ip()
+    if not check_ip_rate_limit(ip, max_requests=3, window_minutes=30):
+        logger.warning(f"Rate limited IP {ip} for fallback verify abuse")
+        return jsonify({"success": False, "error": "Too many requests. Please wait and try again."}), 429
+    
     data = request.get_json() or {}
     tg_id_str = data.get("tg_id")
     
@@ -807,6 +1055,10 @@ def api_fallback_verify():
     try:
         tg_id = int(tg_id_str)
     except ValueError:
+        return jsonify({"success": False, "error": "Invalid tg_id"})
+    
+    # SECURITY: Validate tg_id is a reasonable Telegram user ID (positive, not too large)
+    if tg_id <= 0 or tg_id > 9999999999999:
         return jsonify({"success": False, "error": "Invalid tg_id"})
     
     name = sanitize_input(data.get("name", ""), max_length=100)
@@ -856,19 +1108,29 @@ def api_get_verification():
     """
     API endpoint for bot to fetch verification data.
     Allows bot to check if user passed web verification.
+    
+    SECURITY: Always requires API_SECRET to prevent unauthorized access.
     """
-    # Check API secret if configured
+    # SECURITY: Always require API secret - no empty bypass
     api_secret = os.environ.get("API_SECRET", "")
-    if api_secret:
-        provided = request.headers.get("X-API-Secret") or request.args.get("secret")
-        if provided != api_secret:
-            return jsonify({"error": "Unauthorized"}), 401
+    if not api_secret:
+        logger.error("API_SECRET not configured - /api/get-verification blocked")
+        return jsonify({"error": "Server configuration error"}), 500
+    
+    provided = request.headers.get("X-API-Secret") or request.args.get("secret")
+    if not provided or provided != api_secret:
+        return jsonify({"error": "Unauthorized"}), 401
     
     tg_id_str = request.args.get("tg_id")
     if not tg_id_str or not tg_id_str.isdigit():
         return jsonify({"error": "Invalid tg_id"}), 400
     
-    data = get_pending_verification(int(tg_id_str))
+    # SECURITY: Validate tg_id range
+    tg_id = int(tg_id_str)
+    if tg_id <= 0 or tg_id > 9999999999999:
+        return jsonify({"error": "Invalid tg_id"}), 400
+    
+    data = get_pending_verification(tg_id)
     if data:
         return jsonify({"success": True, "data": data})
     return jsonify({"success": False, "data": None})
