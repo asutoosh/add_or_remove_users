@@ -399,7 +399,8 @@ async def start_trial_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     if BASE_URL.startswith("https://"):
         # Use Web App (opens as popup inside Telegram)
         # Include tg_id in URL as fallback in case JavaScript extraction fails
-        button = InlineKeyboardButton("🌐 Open verification page", web_app=WebAppInfo(url=f"{BASE_URL.rstrip('/')}/trial?tg_id={tg_id}"))
+        # UPDATED: Point to /app to ensure Mini App loads (not landing page or fallback trial page)
+        button = InlineKeyboardButton("🌐 Open verification page", web_app=WebAppInfo(url=f"{BASE_URL.rstrip('/')}/app?tg_id={tg_id}"))
     else:
         # Fallback to regular URL button (opens in external browser)
         # This is needed because Telegram Web Apps require HTTPS

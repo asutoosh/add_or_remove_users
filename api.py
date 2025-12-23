@@ -392,6 +392,16 @@ def serve_home():
         return send_from_directory('templates', 'index.html')
 
 
+@app.route("/app")
+def serve_miniapp():
+    """
+    Dedicated route for the Mini App.
+    Always serves mini_app/index.html regardless of User-Agent.
+    Use this URL in BotFather and for the Menu Button.
+    """
+    return send_from_directory(app.static_folder, 'index.html')
+
+
 @app.route("/health")
 def health():
     """Health check."""
