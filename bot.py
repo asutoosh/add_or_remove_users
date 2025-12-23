@@ -1557,12 +1557,11 @@ async def trial_reminder_5day_3(context: ContextTypes.DEFAULT_TYPE) -> None:
 async def trial_reminder_5day_4(context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = context.job.data["user_id"]
     logger.info(f"trial_reminder_5day_4 job executing for user {user_id}")
-    await _send_trial_reminder(
-        context, user_id,
+    message = format_message(
         "⏱ 4 days (96 hours) have passed. Only the last 24 hours left in your trial!\n\n"
-        f"⚡ Don't miss out! Contact {SUPPORT_CONTACT} to upgrade and keep receiving signals.",
-        reminder_name="96h_reminder_5day"
+        f"⚡ Don't miss out! Contact {SUPPORT_CONTACT} to upgrade and keep receiving signals."
     )
+    await _send_trial_reminder(context, user_id, message, reminder_name="96h_reminder_5day")
 
 
 async def trial_end(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1603,22 +1602,20 @@ async def trial_end(context: ContextTypes.DEFAULT_TYPE) -> None:
 
     # Notify user and remove them from trial channel
     try:
-        await context.bot.send_message(
-            chat_id=user_id,
-            text=(
-                "Your trial just ended 🕊\n\n"
-                "Thank you for testing Freya's Flirty Profits for 3 days.\n\n"
-                "If you liked the structure of the signals and want to keep going, here are your options:\n\n"
-                "✅ 30-Day Premium Membership\n"
-                "– Full access to all signals\n"
-                "– Same entries I personally take\n"
-                "– Ongoing DM support for questions\n\n"
-                f"Message me directly: {SUPPORT_CONTACT}\n\n"
-                "If you're not ready yet, no pressure – you can also stay connected through my public channel for updates and occasional previews:\n\n"
-                f"🌐 Public channel: {GIVEAWAY_CHANNEL_URL}\n\n"
-                "Trade safe, manage your risk, and remember: no one wins every trade – the edge comes from discipline. 💚"
-            ),
+        message = format_message(
+            "Your trial just ended 🕊\n\n"
+            "Thank you for testing Freya's Flirty Profits for 3 days.\n\n"
+            "If you liked the structure of the signals and want to keep going, here are your options:\n\n"
+            "✅ 30-Day Premium Membership\n"
+            "– Full access to all signals\n"
+            "– Same entries I personally take\n"
+            "– Ongoing DM support for questions\n\n"
+            f"Message me directly: {SUPPORT_CONTACT}\n\n"
+            "If you're not ready yet, no pressure – you can also stay connected through my public channel for updates and occasional previews:\n\n"
+            f"🌐 Public channel: {GIVEAWAY_CHANNEL_URL}\n\n"
+            "Trade safe, manage your risk, and remember: no one wins every trade – the edge comes from discipline. 💚"
         )
+        await context.bot.send_message(chat_id=user_id, text=message)
         logger.info(f"✅ Sent trial end message to user {user_id}")
     except Exception as e:
         logger.warning(f"Could not send trial end message to user {user_id}: {e}")
