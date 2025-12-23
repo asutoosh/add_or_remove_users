@@ -587,6 +587,45 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def retry_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    if not user:
+        return
+
+    # 1. Check if trial already used
+    if has_used_trial(user.id):
+        await update.message.reply_text(
+            "You have already used your free trial.",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        return
+
+    # 2. Check if trial already active
+    if get_active_trial(user.id):
+        await update.message.reply_text(
+            "You already have an active trial!",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        return
+
+    # 3. Check if they are actually in the verification process
+    data = get_pending_verification(user.id)
+    if not data or not data.get("step1_ok"):
+        await update.message.reply_text(
+            "⚠️ You haven't started the verification yet.\n\n"
+            "Please use /start to begin.",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        return
+    
+    if data.get("status") == "verified":
+        await update.message.reply_text(
+            "✅ You are already verified!\n\n"
+            "Use /start to get your invite link.",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        return
+
+    # 4. Allow retry if they are stuck at step 2
     contact_button = KeyboardButton(text="📱 Share phone number", request_contact=True)
     deny_button = KeyboardButton(text="❌ No thanks")
     keyboard = ReplyKeyboardMarkup(
