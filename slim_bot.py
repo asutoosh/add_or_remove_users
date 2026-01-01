@@ -350,9 +350,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await update.message.reply_text(
-        "Hey .! 👋\n\n"
+        f"Hey {user.first_name}! 👋\n\n"
         "Welcome to Freya Quinn's Flirty Profits! 💋\n\n"
-        "Get a FREE 3-Day Trial of my VIP signals.\n\n"
+        "Get instant access to my VIP signals.\n\n"
         "Tap the button below to start:",
         reply_markup=reply_markup,
         parse_mode="Markdown"
