@@ -367,28 +367,22 @@ def check_ip_status(ip: str) -> Tuple[bool, bool, bool, str]:
     country_code = data.get("country_code", "").upper()
     is_blocked = country_code == BLOCKED_COUNTRY_CODE
     
-    # Check VPN/proxy
-    # Note: We don't use is_proxy directly as it includes residential proxies which cause false positives
+    # Check VPN/TOR ONLY (not other proxy types like public proxy, web proxy, residential)
+    # This matches web_app.py behavior - user requested only VPN detection
     is_vpn = False
     
     proxy = data.get("proxy")
     if proxy and isinstance(proxy, dict):
-        # Only block actual VPNs, TOR, public proxies, web proxies, and data centers
-        # is_residential_proxy is excluded - causes false positives with some ISPs
-        proxy_indicators = [
-            proxy.get("is_vpn"),
-            proxy.get("is_tor"),
-            proxy.get("is_public_proxy"),
-            proxy.get("is_web_proxy"),
-            proxy.get("is_data_center"),
-        ]
-        if any(proxy_indicators):
+        # Only block VPN and TOR - ignore all other proxy types
+        if proxy.get("is_vpn") is True:
+            is_vpn = True
+        if proxy.get("is_tor") is True:
             is_vpn = True
     
+    # Check proxy_type field - only VPN and TOR
     if not is_vpn:
         proxy_type = data.get("proxy_type")
-        # Removed "RES" (residential) from blocked types
-        if proxy_type and str(proxy_type).upper() in ["VPN", "TOR", "PUB", "WEB", "DCH"]:
+        if proxy_type and str(proxy_type).upper() in ["VPN", "TOR"]:
             is_vpn = True
     
     return is_vpn, is_blocked, False, country_code
