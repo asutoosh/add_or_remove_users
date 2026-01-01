@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import random
@@ -63,6 +64,7 @@ from telegram import (
     ReplyKeyboardRemove,
     WebAppInfo,
 )
+from telegram.error import BadRequest, Forbidden, TelegramError
 from telegram.ext import (
     ApplicationBuilder,
     CallbackQueryHandler,
@@ -113,6 +115,26 @@ if not API_SECRET:
 
 # Bot username for links (without @)
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "Letttttmeeeeeeiiiiiiinbot")
+
+# Admin TG IDs - comma-separated list of Telegram user IDs who can use admin commands
+_admin_ids_raw = os.environ.get("ADMIN_TG_IDS", "")
+ADMIN_TG_IDS: set[int] = set()
+if _admin_ids_raw:
+    for id_str in _admin_ids_raw.split(","):
+        id_str = id_str.strip()
+        if id_str.isdigit():
+            ADMIN_TG_IDS.add(int(id_str))
+    if ADMIN_TG_IDS:
+        logger.info(f"Admin TG IDs configured: {ADMIN_TG_IDS}")
+    else:
+        logger.warning("ADMIN_TG_IDS set but no valid IDs found")
+else:
+    logger.warning("ADMIN_TG_IDS not set - admin commands will be disabled")
+
+
+def is_admin(user_id: int) -> bool:
+    """Check if a user ID is in the admin list."""
+    return user_id in ADMIN_TG_IDS
 
 # Message formatting helper
 def format_message(text: str) -> str:
@@ -357,7 +379,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     keyboard = [
-        [InlineKeyboardButton("🎁 Get Free Trial", callback_data="start_trial")],
+        [InlineKeyboardButton("Access Now", callback_data="start_trial")],
     ]
     
     # Check if user has completed step1 (form) but not step2 (phone)
@@ -381,7 +403,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     
     await update.message.reply_text(
-        "Welcome! Tap the button below to start your free trial verification.",
+        "Hey! 👋\n\n"
+        "Welcome to Freya Quinn's Flirty Profits! 💋\n\n"
+        "Get instant access to my VIP signals.\n\n"
+        "Tap the button below to start:",
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
 
@@ -850,6 +875,811 @@ async def test_leave_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {e}")
+
+
+async def send_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Admin-only command to send messages to specific users by their Telegram chat IDs.
+    
+    Format: /send chat_id1,chat_id2,chat_id3 Your message text here
+    
+    Example: /send 123456789,987654321 Hey! 👋 Here's your exclusive invite: https://t.me/+abc123
+    """
+    user = update.effective_user
+    if not user or not update.message:
+        return
+    
+    # SECURITY: Check admin authorization
+    if not is_admin(user.id):
+        logger.warning(f"Unauthorized /send attempt by user {user.id}")
+        await update.message.reply_text(
+            "❌ Unauthorized. This command is only available to administrators.",
+        )
+        return
+    
+    # Get command arguments
+    if not context.args or len(context.args) < 2:
+        await update.message.reply_text(
+            "📝 Usage: /send chat_id1,chat_id2,... Your message text here\n\n"
+            "Example: /send 123456789,987654321 Hello! Here's your invite link: https://t.me/+abc123"
+        )
+        return
+    
+    # Parse chat IDs (first argument should be comma-separated list)
+    chat_ids_raw = context.args[0]
+    chat_ids_str = [cid.strip() for cid in chat_ids_raw.split(',')]
+    
+    # Parse message (everything after first argument)
+    message_text = ' '.join(context.args[1:])
+    
+    if not message_text:
+        await update.message.reply_text(
+            "❌ Error: Message text cannot be empty.\n\n"
+            "Usage: /send chat_id1,chat_id2,... Your message text here"
+        )
+        return
+    
+    # Validate and convert chat IDs to integers
+    chat_ids = []
+    invalid_ids = []
+    for cid_str in chat_ids_str:
+        try:
+            chat_id = int(cid_str)
+            if chat_id <= 0:
+                invalid_ids.append(cid_str)
+            else:
+                chat_ids.append(chat_id)
+        except ValueError:
+            invalid_ids.append(cid_str)
+    
+    if invalid_ids:
+        await update.message.reply_text(
+            f"❌ Invalid chat IDs: {', '.join(invalid_ids)}\n"
+            "Please ensure all IDs are valid positive numbers."
+        )
+        return
+    
+    if not chat_ids:
+        await update.message.reply_text("❌ No valid chat IDs provided.")
+        return
+    
+    # Limit batch size to prevent timeouts (Telegram allows ~30 messages/sec)
+    MAX_BATCH_SIZE = 30
+    if len(chat_ids) > MAX_BATCH_SIZE:
+        await update.message.reply_text(
+            f"⚠️ Too many chat IDs ({len(chat_ids)}). Maximum {MAX_BATCH_SIZE} per command.\n"
+            "Please split into multiple batches."
+        )
+        return
+    
+    # Send status update
+    status_msg = await update.message.reply_text(
+        f"📤 Sending message to {len(chat_ids)} user(s)...\n"
+        "⏳ Please wait..."
+    )
+    
+    # Send messages with rate limiting
+    successful = []
+    failed = []
+    failed_ids = []
+    
+    for i, chat_id in enumerate(chat_ids):
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=message_text,
+            )
+            successful.append(chat_id)
+            logger.info(f"✅ Admin {user.id} sent message to chat_id {chat_id}")
+            
+            # Rate limiting: 1 second delay between messages (30 msg/sec = ~0.033s, use 1s for safety)
+            if i < len(chat_ids) - 1:  # Don't delay after last message
+                await asyncio.sleep(1)
+                
+        except Forbidden as e:
+            # User blocked the bot or chat doesn't exist
+            failed.append(chat_id)
+            failed_ids.append(str(chat_id))
+            logger.warning(f"❌ Failed to send to {chat_id}: User blocked bot or chat not found - {e}")
+            
+        except BadRequest as e:
+            # Invalid chat ID or other bad request
+            failed.append(chat_id)
+            failed_ids.append(str(chat_id))
+            logger.warning(f"❌ Failed to send to {chat_id}: Invalid chat ID - {e}")
+            
+        except TelegramError as e:
+            # Other Telegram errors (rate limit, network, etc.)
+            failed.append(chat_id)
+            failed_ids.append(str(chat_id))
+            logger.error(f"❌ Failed to send to {chat_id}: Telegram error - {e}")
+            
+        except Exception as e:
+            # Unexpected errors
+            failed.append(chat_id)
+            failed_ids.append(str(chat_id))
+            logger.error(f"❌ Failed to send to {chat_id}: Unexpected error - {e}", exc_info=True)
+    
+    # Build delivery report
+    total = len(chat_ids)
+    success_count = len(successful)
+    failed_count = len(failed)
+    
+    report_lines = [
+        "📊 Broadcast Report",
+        f"✅ Sent: {success_count}/{total}",
+        f"❌ Failed: {failed_count}/{total}",
+    ]
+    
+    if failed_ids:
+        # Limit failed IDs list to prevent message too long error
+        if len(failed_ids) <= 10:
+            report_lines.append(f"📝 Failed IDs: {', '.join(failed_ids)}")
+        else:
+            report_lines.append(f"📝 Failed IDs (first 10): {', '.join(failed_ids[:10])}...")
+            report_lines.append(f"   (Total {len(failed_ids)} failed)")
+    
+    report_text = "\n".join(report_lines)
+    
+    # Update status message with final report
+    try:
+        await status_msg.edit_text(report_text)
+    except Exception as e:
+        logger.warning(f"Could not edit status message: {e}")
+        await update.message.reply_text(report_text)
+    
+    logger.info(f"Admin {user.id} completed broadcast: {success_count} sent, {failed_count} failed")
+
+
+def parse_inline_buttons(text: str):
+    """
+    Parse inline buttons from text.
+    Format: [button:Label:URL] or [button:Label:callback_data]
+    Returns (cleaned_text, InlineKeyboardMarkup or None)
+    """
+    import re
+    pattern = r'\[button:([^:]+):([^\]]+)\]'
+    matches = re.findall(pattern, text)
+    
+    if not matches:
+        return text, None
+    
+    # Remove button syntax from text
+    cleaned_text = re.sub(pattern, '', text).strip()
+    
+    # Build keyboard
+    buttons = []
+    for label, target in matches:
+        label = label.strip()
+        target = target.strip()
+        if target.startswith('http://') or target.startswith('https://'):
+            buttons.append([InlineKeyboardButton(label, url=target)])
+        else:
+            buttons.append([InlineKeyboardButton(label, callback_data=target)])
+    
+    return cleaned_text, InlineKeyboardMarkup(buttons) if buttons else None
+
+
+async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Admin-only command to broadcast a message to ALL users who clicked /start.
+    
+    Format: /broadcast Your message text here
+    Supports: [button:Label:URL] syntax for inline buttons
+    Reply to a photo/video to broadcast media with caption
+    
+    Example: /broadcast 🎉 New signals available! [button:Join Now:https://t.me/+abc123]
+    """
+    user = update.effective_user
+    if not user or not update.message:
+        return
+    
+    # SECURITY: Check admin authorization
+    if not is_admin(user.id):
+        logger.warning(f"Unauthorized /broadcast attempt by user {user.id}")
+        await update.message.reply_text("❌ Unauthorized. Admins only.")
+        return
+    
+    # Import storage functions
+    from storage import get_all_start_users, is_banned
+    
+    # Get all users
+    all_users = get_all_start_users()
+    if not all_users:
+        await update.message.reply_text("❌ No users found in database.")
+        return
+    
+    # Check if replying to media
+    reply_msg = update.message.reply_to_message
+    has_media = False
+    media_type = None
+    
+    if reply_msg:
+        if reply_msg.photo:
+            has_media = True
+            media_type = "photo"
+        elif reply_msg.video:
+            has_media = True
+            media_type = "video"
+        elif reply_msg.document:
+            has_media = True
+            media_type = "document"
+    
+    # Get message text (from args or caption)
+    if context.args:
+        message_text = ' '.join(context.args)
+    elif has_media and reply_msg.caption:
+        message_text = reply_msg.caption
+    else:
+        await update.message.reply_text(
+            "📝 Usage: /broadcast Your message here\n\n"
+            "Or reply to a photo/video with /broadcast [optional caption]\n\n"
+            "Button syntax: [button:Label:https://url.com]"
+        )
+        return
+    
+    # Parse inline buttons
+    cleaned_text, keyboard = parse_inline_buttons(message_text)
+    
+    # Filter out banned users
+    chat_ids = []
+    for tg_id_str, info in all_users.items():
+        try:
+            tg_id = int(tg_id_str)
+            if not is_banned(tg_id):
+                chat_ids.append(tg_id)
+        except ValueError:
+            continue
+    
+    if not chat_ids:
+        await update.message.reply_text("❌ No valid users to broadcast to.")
+        return
+    
+    # Send status update
+    status_msg = await update.message.reply_text(
+        f"📤 Broadcasting to {len(chat_ids)} users...\n"
+        f"⏳ Estimated time: ~{len(chat_ids)} seconds"
+    )
+    
+    # Send messages with rate limiting
+    successful = []
+    failed = []
+    
+    for i, chat_id in enumerate(chat_ids):
+        try:
+            if has_media:
+                if media_type == "photo":
+                    await context.bot.send_photo(
+                        chat_id=chat_id,
+                        photo=reply_msg.photo[-1].file_id,
+                        caption=cleaned_text or None,
+                        reply_markup=keyboard,
+                    )
+                elif media_type == "video":
+                    await context.bot.send_video(
+                        chat_id=chat_id,
+                        video=reply_msg.video.file_id,
+                        caption=cleaned_text or None,
+                        reply_markup=keyboard,
+                    )
+                elif media_type == "document":
+                    await context.bot.send_document(
+                        chat_id=chat_id,
+                        document=reply_msg.document.file_id,
+                        caption=cleaned_text or None,
+                        reply_markup=keyboard,
+                    )
+            else:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=cleaned_text,
+                    reply_markup=keyboard,
+                )
+            successful.append(chat_id)
+            
+            # Update progress every 50 users
+            if (i + 1) % 50 == 0:
+                try:
+                    await status_msg.edit_text(
+                        f"📤 Broadcasting... {i + 1}/{len(chat_ids)}\n"
+                        f"✅ Sent: {len(successful)} | ❌ Failed: {len(failed)}"
+                    )
+                except Exception:
+                    pass
+            
+            # Rate limiting
+            if i < len(chat_ids) - 1:
+                await asyncio.sleep(0.05)  # 20 msg/sec for broadcast
+                
+        except (Forbidden, BadRequest) as e:
+            failed.append(chat_id)
+            logger.warning(f"Broadcast failed to {chat_id}: {e}")
+        except TelegramError as e:
+            failed.append(chat_id)
+            logger.error(f"Broadcast Telegram error for {chat_id}: {e}")
+        except Exception as e:
+            failed.append(chat_id)
+            logger.error(f"Broadcast unexpected error for {chat_id}: {e}")
+    
+    # Final report
+    report = (
+        f"📊 Broadcast Complete\n"
+        f"✅ Sent: {len(successful)}/{len(chat_ids)}\n"
+        f"❌ Failed: {len(failed)}/{len(chat_ids)}"
+    )
+    
+    try:
+        await status_msg.edit_text(report)
+    except Exception:
+        await update.message.reply_text(report)
+    
+    logger.info(f"Admin {user.id} broadcast complete: {len(successful)} sent, {len(failed)} failed")
+
+
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Admin-only command to view bot statistics.
+    """
+    user = update.effective_user
+    if not user or not update.message:
+        return
+    
+    if not is_admin(user.id):
+        await update.message.reply_text("❌ Unauthorized. Admins only.")
+        return
+    
+    from storage import get_storage_stats
+    
+    stats = get_storage_stats()
+    
+    stats_text = (
+        "📊 *Bot Statistics*\n\n"
+        f"👥 Total /start clicks: `{stats['total_start_clicks']}`\n"
+        f"✅ Verified users: `{stats['verified_users']}`\n"
+        f"🎯 Active trials: `{stats['active_trials']}`\n"
+        f"📦 Used trials: `{stats['used_trials']}`\n"
+        f"⏳ Pending verifications: `{stats['pending_verifications']}`\n"
+        f"🚫 Banned users: `{stats['banned_users']}`\n"
+    )
+    
+    await update.message.reply_text(stats_text, parse_mode="Markdown")
+
+
+async def user_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Admin-only command to look up user information.
+    Usage: /user <tg_id>
+    """
+    user = update.effective_user
+    if not user or not update.message:
+        return
+    
+    if not is_admin(user.id):
+        await update.message.reply_text("❌ Unauthorized. Admins only.")
+        return
+    
+    if not context.args:
+        await update.message.reply_text("📝 Usage: /user <tg_id>")
+        return
+    
+    try:
+        target_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("❌ Invalid user ID.")
+        return
+    
+    from storage import (
+        get_start_user_info, get_pending_verification, 
+        get_active_trial, get_used_trial_info, is_banned, get_invite_info
+    )
+    
+    # Gather all info about user
+    start_info = get_start_user_info(target_id)
+    pending = get_pending_verification(target_id)
+    active = get_active_trial(target_id)
+    used = get_used_trial_info(target_id)
+    banned = is_banned(target_id)
+    invite = get_invite_info(target_id)
+    
+    lines = [f"👤 *User {target_id}*\n"]
+    
+    if banned:
+        lines.append("🚫 *STATUS: BANNED*\n")
+    
+    if start_info:
+        lines.append(f"📌 Username: @{start_info.get('username', 'N/A')}")
+        lines.append(f"📌 Name: {start_info.get('first_name', '')} {start_info.get('last_name', '')}")
+        lines.append(f"📌 First click: {start_info.get('first_click_at', 'N/A')[:19] if start_info.get('first_click_at') else 'N/A'}")
+        lines.append(f"📌 Click count: {start_info.get('click_count', 0)}")
+        lines.append("")
+    else:
+        lines.append("❌ No /start click recorded\n")
+    
+    if pending:
+        lines.append(f"📋 Verification status: {pending.get('status', 'unknown')}")
+        lines.append(f"📋 Name: {pending.get('name', 'N/A')}")
+        lines.append(f"📋 Country: {pending.get('country', 'N/A')}")
+        lines.append("")
+    
+    if active:
+        lines.append(f"🎯 *Active Trial*")
+        lines.append(f"   Join time: {active.get('join_time', 'N/A')[:19] if active.get('join_time') else 'N/A'}")
+        lines.append(f"   Hours: {active.get('total_hours', 'N/A')}")
+        lines.append("")
+    elif used:
+        lines.append(f"📦 *Used Trial*")
+        lines.append(f"   Ended at: {used.get('trial_ended_at', used.get('left_early_at', 'N/A'))[:19] if used.get('trial_ended_at') or used.get('left_early_at') else 'N/A'}")
+        lines.append(f"   Reason: {used.get('reason', used.get('ended_by', 'N/A'))}")
+        lines.append("")
+    else:
+        lines.append("❌ No trial record\n")
+    
+    if invite:
+        lines.append(f"🔗 Invite link created: {invite.get('invite_created_at', 'N/A')[:19] if invite.get('invite_created_at') else 'N/A'}")
+    
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+async def ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Admin-only command to ban a user.
+    Usage: /ban <tg_id> [reason]
+    """
+    user = update.effective_user
+    if not user or not update.message:
+        return
+    
+    if not is_admin(user.id):
+        await update.message.reply_text("❌ Unauthorized. Admins only.")
+        return
+    
+    if not context.args:
+        await update.message.reply_text("📝 Usage: /ban <tg_id> [reason]")
+        return
+    
+    try:
+        target_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("❌ Invalid user ID.")
+        return
+    
+    reason = ' '.join(context.args[1:]) if len(context.args) > 1 else "Admin ban"
+    
+    from storage import add_banned_user, is_banned
+    
+    if is_banned(target_id):
+        await update.message.reply_text(f"⚠️ User {target_id} is already banned.")
+        return
+    
+    add_banned_user(target_id, reason, user.id)
+    
+    await update.message.reply_text(
+        f"🚫 User {target_id} has been banned.\n"
+        f"📝 Reason: {reason}"
+    )
+    logger.info(f"Admin {user.id} banned user {target_id}, reason: {reason}")
+
+
+async def unban_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Admin-only command to unban a user.
+    Usage: /unban <tg_id>
+    """
+    user = update.effective_user
+    if not user or not update.message:
+        return
+    
+    if not is_admin(user.id):
+        await update.message.reply_text("❌ Unauthorized. Admins only.")
+        return
+    
+    if not context.args:
+        await update.message.reply_text("📝 Usage: /unban <tg_id>")
+        return
+    
+    try:
+        target_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("❌ Invalid user ID.")
+        return
+    
+    from storage import remove_banned_user
+    
+    if remove_banned_user(target_id):
+        await update.message.reply_text(f"✅ User {target_id} has been unbanned.")
+        logger.info(f"Admin {user.id} unbanned user {target_id}")
+    else:
+        await update.message.reply_text(f"⚠️ User {target_id} was not banned.")
+
+
+async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Admin-only command to export data as JSON file.
+    Usage: /export [clicks|trials|verified|all]
+    """
+    user = update.effective_user
+    if not user or not update.message:
+        return
+    
+    if not is_admin(user.id):
+        await update.message.reply_text("❌ Unauthorized. Admins only.")
+        return
+    
+    export_type = context.args[0].lower() if context.args else "all"
+    
+    from storage import (
+        get_all_start_users, get_all_active_trials, 
+        USED_TRIALS_FILE, PENDING_FILE, _load_json
+    )
+    import json
+    import tempfile
+    
+    data = {}
+    filename = "export"
+    
+    if export_type in ("clicks", "all"):
+        data["start_clicks"] = get_all_start_users()
+        filename = "clicks" if export_type == "clicks" else filename
+    
+    if export_type in ("trials", "all"):
+        data["active_trials"] = get_all_active_trials()
+        data["used_trials"] = _load_json(USED_TRIALS_FILE, {})
+        filename = "trials" if export_type == "trials" else filename
+    
+    if export_type in ("verified", "all"):
+        data["pending_verifications"] = _load_json(PENDING_FILE, {})
+        filename = "verified" if export_type == "verified" else filename
+    
+    if export_type == "all":
+        filename = "all_data"
+    
+    if not data:
+        await update.message.reply_text(
+            "📝 Usage: /export [clicks|trials|verified|all]\n"
+            "Default: all"
+        )
+        return
+    
+    # Create temp file and send
+    import io
+    json_str = json.dumps(data, indent=2, ensure_ascii=False)
+    file_bytes = io.BytesIO(json_str.encode('utf-8'))
+    file_bytes.name = f"{filename}_{_now_utc().strftime('%Y%m%d_%H%M%S')}.json"
+    
+    await update.message.reply_document(
+        document=file_bytes,
+        filename=file_bytes.name,
+        caption=f"📦 Exported: {export_type}"
+    )
+    logger.info(f"Admin {user.id} exported {export_type} data")
+
+
+async def schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Admin-only command to schedule a broadcast.
+    Usage: /schedule YYYY-MM-DD HH:MM Your message here
+    
+    Example: /schedule 2026-01-02 10:00 Happy New Year everyone! 🎉
+    """
+    user = update.effective_user
+    if not user or not update.message:
+        return
+    
+    if not is_admin(user.id):
+        await update.message.reply_text("❌ Unauthorized. Admins only.")
+        return
+    
+    if not context.args or len(context.args) < 3:
+        await update.message.reply_text(
+            "📝 Usage: /schedule YYYY-MM-DD HH:MM Your message\n\n"
+            "Example: /schedule 2026-01-02 10:00 Happy New Year! 🎉"
+        )
+        return
+    
+    # Parse date and time
+    date_str = context.args[0]
+    time_str = context.args[1]
+    message_text = ' '.join(context.args[2:])
+    
+    try:
+        scheduled_dt = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
+        scheduled_dt = scheduled_dt.replace(tzinfo=timezone.utc)
+    except ValueError:
+        await update.message.reply_text(
+            "❌ Invalid date/time format.\n"
+            "Use: YYYY-MM-DD HH:MM (e.g., 2026-01-02 10:00)"
+        )
+        return
+    
+    now = _now_utc()
+    if scheduled_dt <= now:
+        await update.message.reply_text("❌ Scheduled time must be in the future.")
+        return
+    
+    from storage import add_scheduled_broadcast
+    
+    broadcast_id = add_scheduled_broadcast({
+        "scheduled_at": scheduled_dt.isoformat(),
+        "message": message_text,
+        "created_by": user.id,
+    })
+    
+    # Schedule the job
+    delay = scheduled_dt - now
+    context.job_queue.run_once(
+        execute_scheduled_broadcast,
+        when=delay,
+        data={"broadcast_id": broadcast_id},
+        name=f"scheduled_broadcast_{broadcast_id}"
+    )
+    
+    await update.message.reply_text(
+        f"✅ Broadcast scheduled!\n\n"
+        f"🆔 ID: `{broadcast_id}`\n"
+        f"📅 Date: {date_str} {time_str} UTC\n"
+        f"📝 Message: {message_text[:100]}{'...' if len(message_text) > 100 else ''}"
+    , parse_mode="Markdown")
+    
+    logger.info(f"Admin {user.id} scheduled broadcast {broadcast_id} for {scheduled_dt}")
+
+
+async def execute_scheduled_broadcast(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Execute a scheduled broadcast."""
+    broadcast_id = context.job.data["broadcast_id"]
+    
+    from storage import (
+        get_all_start_users, is_banned, 
+        mark_broadcast_sent, get_scheduled_broadcasts
+    )
+    
+    # Find the broadcast
+    broadcasts = get_scheduled_broadcasts()
+    broadcast = next((b for b in broadcasts if b.get("id") == broadcast_id), None)
+    
+    if not broadcast or broadcast.get("sent"):
+        logger.info(f"Scheduled broadcast {broadcast_id} not found or already sent")
+        return
+    
+    message_text = broadcast.get("message", "")
+    if not message_text:
+        logger.warning(f"Scheduled broadcast {broadcast_id} has no message")
+        return
+    
+    # Parse buttons
+    cleaned_text, keyboard = parse_inline_buttons(message_text)
+    
+    # Get all non-banned users
+    all_users = get_all_start_users()
+    chat_ids = [int(tg_id) for tg_id in all_users.keys() if not is_banned(int(tg_id))]
+    
+    successful = 0
+    failed = 0
+    
+    for chat_id in chat_ids:
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=cleaned_text,
+                reply_markup=keyboard,
+            )
+            successful += 1
+            await asyncio.sleep(0.05)
+        except Exception as e:
+            failed += 1
+            logger.warning(f"Scheduled broadcast failed to {chat_id}: {e}")
+    
+    mark_broadcast_sent(broadcast_id)
+    logger.info(f"Scheduled broadcast {broadcast_id} complete: {successful} sent, {failed} failed")
+
+
+async def delete_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Admin-only command to delete a previously sent message.
+    Usage: /delete <chat_id> <message_id>
+    """
+    user = update.effective_user
+    if not user or not update.message:
+        return
+    
+    if not is_admin(user.id):
+        await update.message.reply_text("❌ Unauthorized. Admins only.")
+        return
+    
+    if len(context.args) < 2:
+        await update.message.reply_text("📝 Usage: /delete <chat_id> <message_id>")
+        return
+    
+    try:
+        chat_id = int(context.args[0])
+        message_id = int(context.args[1])
+    except ValueError:
+        await update.message.reply_text("❌ Invalid chat_id or message_id.")
+        return
+    
+    try:
+        await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+        await update.message.reply_text(f"✅ Message {message_id} deleted from chat {chat_id}.")
+        logger.info(f"Admin {user.id} deleted message {message_id} from chat {chat_id}")
+    except BadRequest as e:
+        await update.message.reply_text(f"❌ Could not delete message: {e}")
+    except Forbidden as e:
+        await update.message.reply_text(f"❌ No permission to delete: {e}")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
+
+
+async def list_scheduled_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Admin-only command to list all scheduled broadcasts.
+    Usage: /list_scheduled
+    """
+    user = update.effective_user
+    if not user or not update.message:
+        return
+    
+    if not is_admin(user.id):
+        await update.message.reply_text("❌ Unauthorized. Admins only.")
+        return
+    
+    from storage import get_scheduled_broadcasts
+    
+    broadcasts = get_scheduled_broadcasts()
+    pending = [b for b in broadcasts if not b.get("sent")]
+    
+    if not pending:
+        await update.message.reply_text("📭 No scheduled broadcasts pending.")
+        return
+    
+    lines = ["📋 *Scheduled Broadcasts*\n"]
+    for b in pending[:10]:  # Show max 10
+        bid = b.get("id", "?")
+        scheduled_at = b.get("scheduled_at", "?")[:16] if b.get("scheduled_at") else "?"
+        message = b.get("message", "")[:50]
+        lines.append(f"🆔 `{bid}`")
+        lines.append(f"   📅 {scheduled_at} UTC")
+        lines.append(f"   📝 {message}{'...' if len(b.get('message', '')) > 50 else ''}")
+        lines.append("")
+    
+    if len(pending) > 10:
+        lines.append(f"... and {len(pending) - 10} more")
+    
+    lines.append("\n💡 Use `/cancel <id>` to cancel a broadcast")
+    
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+async def cancel_broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Admin-only command to cancel a scheduled broadcast.
+    Usage: /cancel <broadcast_id>
+    """
+    user = update.effective_user
+    if not user or not update.message:
+        return
+    
+    if not is_admin(user.id):
+        await update.message.reply_text("❌ Unauthorized. Admins only.")
+        return
+    
+    if not context.args:
+        await update.message.reply_text("📝 Usage: /cancel <broadcast_id>")
+        return
+    
+    broadcast_id = context.args[0]
+    
+    from storage import remove_scheduled_broadcast
+    
+    # Remove from storage
+    if remove_scheduled_broadcast(broadcast_id):
+        # Also try to remove from job queue
+        jobs = context.job_queue.get_jobs_by_name(f"scheduled_broadcast_{broadcast_id}")
+        for job in jobs:
+            job.schedule_removal()
+        
+        await update.message.reply_text(f"✅ Broadcast `{broadcast_id}` cancelled.", parse_mode="Markdown")
+        logger.info(f"Admin {user.id} cancelled broadcast {broadcast_id}")
+    else:
+        await update.message.reply_text(f"❌ Broadcast `{broadcast_id}` not found.", parse_mode="Markdown")
 
 
 async def text_during_phone_verification_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1777,6 +2607,19 @@ def main() -> None:
     application.add_handler(CommandHandler("retry", retry_command))
     application.add_handler(CommandHandler("status", status_command))
     application.add_handler(CommandHandler("test_leave", test_leave_command))
+    application.add_handler(CommandHandler("send", send_command))
+    
+    # Admin commands
+    application.add_handler(CommandHandler("broadcast", broadcast_command))
+    application.add_handler(CommandHandler("stats", stats_command))
+    application.add_handler(CommandHandler("user", user_command))
+    application.add_handler(CommandHandler("ban", ban_command))
+    application.add_handler(CommandHandler("unban", unban_command))
+    application.add_handler(CommandHandler("export", export_command))
+    application.add_handler(CommandHandler("schedule", schedule_command))
+    application.add_handler(CommandHandler("delete", delete_command))
+    application.add_handler(CommandHandler("list_scheduled", list_scheduled_command))
+    application.add_handler(CommandHandler("cancel", cancel_broadcast_command))
 
     application.add_handler(
         CallbackQueryHandler(start_trial_callback, pattern="^start_trial$")

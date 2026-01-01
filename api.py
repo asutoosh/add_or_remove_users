@@ -57,14 +57,19 @@ SUPPORT_CONTACT = os.environ.get("SUPPORT_CONTACT", "@cogitosk")
 INVITE_LINK_EXPIRY_HOURS = int(os.environ.get("INVITE_LINK_EXPIRY_HOURS", "5"))
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "Letttttmeeeeeeiiiiiiinbot")
 
-# SECURITY FIX #6: Warn if API_SECRET not set
-if not API_SECRET:
-    logger.warning(
-        "⚠️ API_SECRET not set! The /api/get-verification endpoint will be publicly accessible."
+# SECURITY: Fail fast if API_SECRET not set or too short
+if not API_SECRET or len(API_SECRET) < 32:
+    logger.critical(
+        "❌ FATAL: API_SECRET not set or too short (min 32 chars)! "
+        "Set API_SECRET in .env file."
     )
+    raise SystemExit("API_SECRET must be set and at least 32 characters long")
 
 # Flask app
 app = Flask(__name__, static_folder='mini_app', static_url_path='')
+
+# SECURITY: Limit request body size to prevent large POST attacks
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024  # 16 KB max
 
 # Rate limiting storage (in-memory, resets on restart)
 _ip_rate_limits = defaultdict(list)

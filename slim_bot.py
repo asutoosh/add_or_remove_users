@@ -34,13 +34,13 @@ from storage import (
     get_used_trial_info,
     get_all_active_trials,
     append_trial_log,
-    append_trial_log,
     track_start_click,
     get_pending_verification,
     set_pending_verification,
     clear_pending_verification,
     get_valid_invite_link,
     set_invite_info,
+    _verify_trial_signature,
 )
 
 # Configure logging
@@ -83,9 +83,13 @@ TRIAL_END_5DAY_MINUTES = _safe_float_env("TRIAL_END_5DAY_MINUTES", 7200.0)  # 12
 
 TAMPERING_TOLERANCE_SECONDS = 3600
 BLOCKED_PHONE_COUNTRY_CODE = os.environ.get("BLOCKED_PHONE_COUNTRY_CODE", "+91")
-INVITE_LINK_EXPIRY_HOURS = 5
+INVITE_LINK_EXPIRY_HOURS = int(os.environ.get("INVITE_LINK_EXPIRY_HOURS", "5"))
 
-TRIAL_COOLDOWN_DAYS = 30
+# Phone verification - can be disabled via env
+REQUIRE_PHONE_VERIFICATION = os.environ.get("REQUIRE_PHONE_VERIFICATION", "true").lower() == "true"
+
+# Trial cooldown in days before user can retry
+TRIAL_COOLDOWN_DAYS = int(os.environ.get("TRIAL_COOLDOWN_DAYS", "30"))
 
 # Links
 GIVEAWAY_CHANNEL_URL = os.environ.get("GIVEAWAY_CHANNEL_URL", "https://t.me/Freya_Trades")
@@ -724,8 +728,497 @@ async def phone_deny_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 # =============================================================================
+# Admin Commands
+# =============================================================================
+
+# Admin TG IDs - comma-separated list of Telegram user IDs who can use admin commands
+_admin_ids_raw = os.environ.get("ADMIN_TG_IDS", "")
+ADMIN_TG_IDS: set[int] = set()
+if _admin_ids_raw:
+    for id_str in _admin_ids_raw.split(","):
+        id_str = id_str.strip()
+        if id_str.isdigit():
+            ADMIN_TG_IDS.add(int(id_str))
+
+
+def is_admin(user_id: int) -> bool:
+    """Check if a user ID is in the admin list."""
+    return user_id in ADMIN_TG_IDS
+
+
+def parse_inline_buttons(text: str):
+    """
+    Parse inline buttons from text.
+    Format: [button:Label:URL] or [button:Label:callback_data]
+    Returns (cleaned_text, InlineKeyboardMarkup or None)
+    """
+    import re
+    pattern = r'\[button:([^:]+):([^\]]+)\]'
+    matches = re.findall(pattern, text)
+    
+    if not matches:
+        return text, None
+    
+    cleaned_text = re.sub(pattern, '', text).strip()
+    
+    buttons = []
+    for label, target in matches:
+        label = label.strip()
+        target = target.strip()
+        if target.startswith('http://') or target.startswith('https://'):
+            buttons.append([InlineKeyboardButton(label, url=target)])
+        else:
+            buttons.append([InlineKeyboardButton(label, callback_data=target)])
+    
+    return cleaned_text, InlineKeyboardMarkup(buttons) if buttons else None
+
+
+async def send_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin command to send messages to specific chat IDs."""
+    user = update.effective_user
+    if not user or not update.message:
+        return
+    
+    if not is_admin(user.id):
+        await update.message.reply_text("❌ Unauthorized. Admins only.")
+        return
+    
+    if not context.args or len(context.args) < 2:
+        await update.message.reply_text(
+            "📝 Usage: /send chat_id1,chat_id2,... Your message\n"
+            "Button syntax: [button:Label:URL]"
+        )
+        return
+    
+    chat_ids_raw = context.args[0]
+    message_text = ' '.join(context.args[1:])
+    cleaned_text, keyboard = parse_inline_buttons(message_text)
+    
+    chat_ids = []
+    for cid_str in chat_ids_raw.split(','):
+        try:
+            cid = int(cid_str.strip())
+            if cid > 0:
+                chat_ids.append(cid)
+        except ValueError:
+            continue
+    
+    if not chat_ids or not cleaned_text:
+        await update.message.reply_text("❌ Invalid chat IDs or empty message.")
+        return
+    
+    from telegram.error import BadRequest, Forbidden, TelegramError
+    import asyncio
+    
+    successful, failed = [], []
+    for chat_id in chat_ids:
+        try:
+            await context.bot.send_message(chat_id=chat_id, text=cleaned_text, reply_markup=keyboard)
+            successful.append(chat_id)
+            await asyncio.sleep(0.5)
+        except (Forbidden, BadRequest, TelegramError):
+            failed.append(chat_id)
+    
+    await update.message.reply_text(
+        f"📊 Sent: {len(successful)}/{len(chat_ids)} | Failed: {len(failed)}"
+    )
+
+
+async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin command to broadcast to all /start users."""
+    user = update.effective_user
+    if not user or not update.message:
+        return
+    
+    if not is_admin(user.id):
+        await update.message.reply_text("❌ Unauthorized. Admins only.")
+        return
+    
+    from storage import get_all_start_users, is_banned
+    from telegram.error import BadRequest, Forbidden, TelegramError
+    import asyncio
+    
+    all_users = get_all_start_users()
+    if not all_users:
+        await update.message.reply_text("❌ No users found.")
+        return
+    
+    reply_msg = update.message.reply_to_message
+    has_media = False
+    media_type = None
+    
+    if reply_msg:
+        if reply_msg.photo:
+            has_media, media_type = True, "photo"
+        elif reply_msg.video:
+            has_media, media_type = True, "video"
+        elif reply_msg.document:
+            has_media, media_type = True, "document"
+    
+    if context.args:
+        message_text = ' '.join(context.args)
+    elif has_media and reply_msg.caption:
+        message_text = reply_msg.caption
+    else:
+        await update.message.reply_text(
+            "📝 Usage: /broadcast Your message\n"
+            "Or reply to media with /broadcast"
+        )
+        return
+    
+    cleaned_text, keyboard = parse_inline_buttons(message_text)
+    chat_ids = [int(tg_id) for tg_id in all_users.keys() if not is_banned(int(tg_id))]
+    
+    status_msg = await update.message.reply_text(f"📤 Broadcasting to {len(chat_ids)} users...")
+    
+    successful, failed = 0, 0
+    for i, chat_id in enumerate(chat_ids):
+        try:
+            if has_media:
+                if media_type == "photo":
+                    await context.bot.send_photo(chat_id=chat_id, photo=reply_msg.photo[-1].file_id, caption=cleaned_text, reply_markup=keyboard)
+                elif media_type == "video":
+                    await context.bot.send_video(chat_id=chat_id, video=reply_msg.video.file_id, caption=cleaned_text, reply_markup=keyboard)
+                elif media_type == "document":
+                    await context.bot.send_document(chat_id=chat_id, document=reply_msg.document.file_id, caption=cleaned_text, reply_markup=keyboard)
+            else:
+                await context.bot.send_message(chat_id=chat_id, text=cleaned_text, reply_markup=keyboard)
+            successful += 1
+            if (i + 1) % 50 == 0:
+                try:
+                    await status_msg.edit_text(f"📤 {i+1}/{len(chat_ids)} | ✅ {successful} | ❌ {failed}")
+                except Exception:
+                    pass
+            await asyncio.sleep(0.05)
+        except (Forbidden, BadRequest, TelegramError):
+            failed += 1
+    
+    await status_msg.edit_text(f"📊 Complete: ✅ {successful}/{len(chat_ids)} | ❌ {failed}")
+
+
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin command to view statistics."""
+    user = update.effective_user
+    if not user or not update.message:
+        return
+    
+    if not is_admin(user.id):
+        await update.message.reply_text("❌ Unauthorized. Admins only.")
+        return
+    
+    from storage import get_storage_stats
+    stats = get_storage_stats()
+    
+    await update.message.reply_text(
+        f"📊 *Statistics*\n\n"
+        f"👥 /start clicks: `{stats['total_start_clicks']}`\n"
+        f"✅ Verified: `{stats['verified_users']}`\n"
+        f"🎯 Active trials: `{stats['active_trials']}`\n"
+        f"📦 Used trials: `{stats['used_trials']}`\n"
+        f"🚫 Banned: `{stats['banned_users']}`",
+        parse_mode="Markdown"
+    )
+
+
+async def user_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin command to lookup user info."""
+    user = update.effective_user
+    if not user or not update.message:
+        return
+    
+    if not is_admin(user.id):
+        await update.message.reply_text("❌ Unauthorized.")
+        return
+    
+    if not context.args:
+        await update.message.reply_text("📝 Usage: /user <tg_id>")
+        return
+    
+    try:
+        target_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("❌ Invalid ID.")
+        return
+    
+    from storage import get_start_user_info, get_active_trial, get_used_trial_info, is_banned
+    
+    start_info = get_start_user_info(target_id)
+    active = get_active_trial(target_id)
+    used = get_used_trial_info(target_id)
+    banned = is_banned(target_id)
+    
+    lines = [f"👤 *User {target_id}*"]
+    if banned:
+        lines.append("🚫 *BANNED*")
+    if start_info:
+        lines.append(f"📌 @{start_info.get('username', 'N/A')}")
+        lines.append(f"📌 Clicks: {start_info.get('click_count', 0)}")
+    if active:
+        lines.append(f"🎯 Active trial: {active.get('total_hours', '?')}h")
+    elif used:
+        lines.append(f"📦 Trial used")
+    
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+async def ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin command to ban a user."""
+    user = update.effective_user
+    if not user or not update.message:
+        return
+    
+    if not is_admin(user.id):
+        await update.message.reply_text("❌ Unauthorized.")
+        return
+    
+    if not context.args:
+        await update.message.reply_text("📝 Usage: /ban <tg_id> [reason]")
+        return
+    
+    try:
+        target_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("❌ Invalid ID.")
+        return
+    
+    reason = ' '.join(context.args[1:]) if len(context.args) > 1 else "Admin ban"
+    
+    from storage import add_banned_user, is_banned
+    if is_banned(target_id):
+        await update.message.reply_text(f"⚠️ Already banned.")
+        return
+    
+    add_banned_user(target_id, reason, user.id)
+    await update.message.reply_text(f"🚫 User {target_id} banned.")
+
+
+async def unban_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin command to unban a user."""
+    user = update.effective_user
+    if not user or not update.message:
+        return
+    
+    if not is_admin(user.id):
+        await update.message.reply_text("❌ Unauthorized.")
+        return
+    
+    if not context.args:
+        await update.message.reply_text("📝 Usage: /unban <tg_id>")
+        return
+    
+    try:
+        target_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("❌ Invalid ID.")
+        return
+    
+    from storage import remove_banned_user
+    if remove_banned_user(target_id):
+        await update.message.reply_text(f"✅ User {target_id} unbanned.")
+    else:
+        await update.message.reply_text(f"⚠️ User was not banned.")
+
+
+async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin command to export data as JSON."""
+    user = update.effective_user
+    if not user or not update.message:
+        return
+    
+    if not is_admin(user.id):
+        await update.message.reply_text("❌ Unauthorized.")
+        return
+    
+    export_type = context.args[0].lower() if context.args else "all"
+    
+    from storage import get_all_start_users, get_all_active_trials, USED_TRIALS_FILE, PENDING_FILE, _load_json
+    import json, io
+    
+    data = {}
+    if export_type in ("clicks", "all"):
+        data["start_clicks"] = get_all_start_users()
+    if export_type in ("trials", "all"):
+        data["active_trials"] = get_all_active_trials()
+        data["used_trials"] = _load_json(USED_TRIALS_FILE, {})
+    if export_type in ("verified", "all"):
+        data["verifications"] = _load_json(PENDING_FILE, {})
+    
+    json_str = json.dumps(data, indent=2, ensure_ascii=False)
+    file_bytes = io.BytesIO(json_str.encode('utf-8'))
+    file_bytes.name = f"export_{export_type}.json"
+    
+    await update.message.reply_document(document=file_bytes, caption=f"📦 Exported: {export_type}")
+
+
+async def schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin command to schedule a broadcast."""
+    user = update.effective_user
+    if not user or not update.message:
+        return
+    
+    if not is_admin(user.id):
+        await update.message.reply_text("❌ Unauthorized.")
+        return
+    
+    if not context.args or len(context.args) < 3:
+        await update.message.reply_text("📝 Usage: /schedule YYYY-MM-DD HH:MM Message")
+        return
+    
+    date_str, time_str = context.args[0], context.args[1]
+    message_text = ' '.join(context.args[2:])
+    
+    try:
+        scheduled_dt = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
+        scheduled_dt = scheduled_dt.replace(tzinfo=timezone.utc)
+    except ValueError:
+        await update.message.reply_text("❌ Invalid format. Use YYYY-MM-DD HH:MM")
+        return
+    
+    now = _now_utc()
+    if scheduled_dt <= now:
+        await update.message.reply_text("❌ Time must be in the future.")
+        return
+    
+    from storage import add_scheduled_broadcast
+    broadcast_id = add_scheduled_broadcast({
+        "scheduled_at": scheduled_dt.isoformat(),
+        "message": message_text,
+        "created_by": user.id,
+    })
+    
+    delay = scheduled_dt - now
+    context.job_queue.run_once(
+        execute_scheduled_broadcast,
+        when=delay,
+        data={"broadcast_id": broadcast_id}
+    )
+    
+    await update.message.reply_text(f"✅ Scheduled! ID: `{broadcast_id}`", parse_mode="Markdown")
+
+
+async def execute_scheduled_broadcast(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Execute scheduled broadcast."""
+    broadcast_id = context.job.data["broadcast_id"]
+    
+    from storage import get_all_start_users, is_banned, mark_broadcast_sent, get_scheduled_broadcasts
+    import asyncio
+    
+    broadcasts = get_scheduled_broadcasts()
+    broadcast = next((b for b in broadcasts if b.get("id") == broadcast_id), None)
+    
+    if not broadcast or broadcast.get("sent"):
+        return
+    
+    message_text = broadcast.get("message", "")
+    cleaned_text, keyboard = parse_inline_buttons(message_text)
+    
+    all_users = get_all_start_users()
+    chat_ids = [int(tg_id) for tg_id in all_users.keys() if not is_banned(int(tg_id))]
+    
+    for chat_id in chat_ids:
+        try:
+            await context.bot.send_message(chat_id=chat_id, text=cleaned_text, reply_markup=keyboard)
+            await asyncio.sleep(0.05)
+        except Exception:
+            pass
+    
+    mark_broadcast_sent(broadcast_id)
+
+
+async def delete_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin command to delete a message."""
+    user = update.effective_user
+    if not user or not update.message:
+        return
+    
+    if not is_admin(user.id):
+        await update.message.reply_text("❌ Unauthorized.")
+        return
+    
+    if len(context.args) < 2:
+        await update.message.reply_text("📝 Usage: /delete <chat_id> <message_id>")
+        return
+    
+    try:
+        chat_id, message_id = int(context.args[0]), int(context.args[1])
+    except ValueError:
+        await update.message.reply_text("❌ Invalid IDs.")
+        return
+    
+    try:
+        await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+        await update.message.reply_text(f"✅ Deleted.")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
+
+
+async def list_scheduled_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin command to list scheduled broadcasts."""
+    user = update.effective_user
+    if not user or not update.message:
+        return
+    
+    if not is_admin(user.id):
+        await update.message.reply_text("❌ Unauthorized.")
+        return
+    
+    from storage import get_scheduled_broadcasts
+    
+    broadcasts = get_scheduled_broadcasts()
+    pending = [b for b in broadcasts if not b.get("sent")]
+    
+    if not pending:
+        await update.message.reply_text("📭 No scheduled broadcasts.")
+        return
+    
+    lines = ["📋 *Scheduled Broadcasts*\n"]
+    for b in pending[:10]:
+        bid = b.get("id", "?")
+        scheduled_at = b.get("scheduled_at", "?")[:16] if b.get("scheduled_at") else "?"
+        message = b.get("message", "")[:40]
+        lines.append(f"🆔 `{bid}` - {scheduled_at}")
+        lines.append(f"   {message}{'...' if len(b.get('message', '')) > 40 else ''}")
+    
+    if len(pending) > 10:
+        lines.append(f"\n... and {len(pending) - 10} more")
+    
+    lines.append("\n💡 `/cancel <id>` to cancel")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+async def cancel_broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin command to cancel a scheduled broadcast."""
+    user = update.effective_user
+    if not user or not update.message:
+        return
+    
+    if not is_admin(user.id):
+        await update.message.reply_text("❌ Unauthorized.")
+        return
+    
+    if not context.args:
+        await update.message.reply_text("📝 Usage: /cancel <broadcast_id>")
+        return
+    
+    broadcast_id = context.args[0]
+    
+    from storage import remove_scheduled_broadcast
+    
+    if remove_scheduled_broadcast(broadcast_id):
+        jobs = context.job_queue.get_jobs_by_name(f"scheduled_broadcast_{broadcast_id}")
+        for job in jobs:
+            job.schedule_removal()
+        await update.message.reply_text(f"✅ Broadcast `{broadcast_id}` cancelled.", parse_mode="Markdown")
+    else:
+        await update.message.reply_text(f"❌ Not found: `{broadcast_id}`", parse_mode="Markdown")
+
+
+
+
+# =============================================================================
 # Chat Member Handler (Join/Leave Detection)
 # =============================================================================
+
 
 async def trial_chat_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle user join/leave in trial channel."""
@@ -1144,6 +1637,19 @@ def main():
     application.add_handler(CommandHandler("about", cmd_about))
     application.add_handler(CommandHandler("support", cmd_support))
     application.add_handler(CommandHandler("retry", retry_command))
+    
+    # Admin commands
+    application.add_handler(CommandHandler("send", send_command))
+    application.add_handler(CommandHandler("broadcast", broadcast_command))
+    application.add_handler(CommandHandler("stats", stats_command))
+    application.add_handler(CommandHandler("user", user_command))
+    application.add_handler(CommandHandler("ban", ban_command))
+    application.add_handler(CommandHandler("unban", unban_command))
+    application.add_handler(CommandHandler("export", export_command))
+    application.add_handler(CommandHandler("schedule", schedule_command))
+    application.add_handler(CommandHandler("delete", delete_command))
+    application.add_handler(CommandHandler("list_scheduled", list_scheduled_command))
+    application.add_handler(CommandHandler("cancel", cancel_broadcast_command))
     
     # Contact Handler
     application.add_handler(MessageHandler(filters.CONTACT, contact_handler))

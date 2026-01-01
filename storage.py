@@ -606,3 +606,147 @@ def cleanup_expired_pending_verifications() -> int:
         
         return len(expired_ids)
 
+
+# =============================================================================
+# Banned Users Management
+# =============================================================================
+
+BANNED_USERS_FILE = os.path.join(BASE_DIR, "banned_users.json")
+
+
+def get_banned_users() -> Dict[str, Any]:
+    """Get all banned users."""
+    with _lock:
+        return _load_json(BANNED_USERS_FILE, {})
+
+
+def is_banned(tg_id: int) -> bool:
+    """Check if a user is banned."""
+    with _lock:
+        data = _load_json(BANNED_USERS_FILE, {})
+        return str(tg_id) in data
+
+
+def add_banned_user(tg_id: int, reason: str, banned_by: int) -> None:
+    """Add a user to the banned list."""
+    with _lock:
+        data = _load_json(BANNED_USERS_FILE, {})
+        data[str(tg_id)] = {
+            "banned_at": datetime.now(timezone.utc).isoformat(),
+            "reason": reason,
+            "banned_by": banned_by,
+        }
+        _save_json(BANNED_USERS_FILE, data)
+        logger.info(f"Banned user {tg_id}, reason: {reason}")
+
+
+def remove_banned_user(tg_id: int) -> bool:
+    """Remove a user from the banned list. Returns True if user was banned."""
+    with _lock:
+        data = _load_json(BANNED_USERS_FILE, {})
+        if str(tg_id) in data:
+            del data[str(tg_id)]
+            _save_json(BANNED_USERS_FILE, data)
+            logger.info(f"Unbanned user {tg_id}")
+            return True
+        return False
+
+
+# =============================================================================
+# Scheduled Broadcasts
+# =============================================================================
+
+SCHEDULED_BROADCASTS_FILE = os.path.join(BASE_DIR, "scheduled_broadcasts.json")
+
+
+def get_scheduled_broadcasts() -> List[Dict[str, Any]]:
+    """Get all scheduled broadcasts."""
+    with _lock:
+        return _load_json(SCHEDULED_BROADCASTS_FILE, [])
+
+
+def add_scheduled_broadcast(broadcast_data: Dict[str, Any]) -> str:
+    """
+    Add a scheduled broadcast.
+    Returns the broadcast ID.
+    """
+    import uuid
+    with _lock:
+        data = _load_json(SCHEDULED_BROADCASTS_FILE, [])
+        broadcast_id = str(uuid.uuid4())[:8]
+        broadcast_data["id"] = broadcast_id
+        broadcast_data["created_at"] = datetime.now(timezone.utc).isoformat()
+        data.append(broadcast_data)
+        _save_json(SCHEDULED_BROADCASTS_FILE, data)
+        logger.info(f"Added scheduled broadcast {broadcast_id}")
+        return broadcast_id
+
+
+def remove_scheduled_broadcast(broadcast_id: str) -> bool:
+    """Remove a scheduled broadcast by ID."""
+    with _lock:
+        data = _load_json(SCHEDULED_BROADCASTS_FILE, [])
+        new_data = [b for b in data if b.get("id") != broadcast_id]
+        if len(new_data) < len(data):
+            _save_json(SCHEDULED_BROADCASTS_FILE, new_data)
+            logger.info(f"Removed scheduled broadcast {broadcast_id}")
+            return True
+        return False
+
+
+def get_pending_broadcasts(now: datetime) -> List[Dict[str, Any]]:
+    """Get broadcasts that are due to be sent."""
+    with _lock:
+        data = _load_json(SCHEDULED_BROADCASTS_FILE, [])
+        pending = []
+        for broadcast in data:
+            scheduled_at_str = broadcast.get("scheduled_at")
+            if not scheduled_at_str:
+                continue
+            try:
+                scheduled_at = _parse_iso_to_utc(scheduled_at_str)
+                if scheduled_at <= now and not broadcast.get("sent"):
+                    pending.append(broadcast)
+            except Exception:
+                pass
+        return pending
+
+
+def mark_broadcast_sent(broadcast_id: str) -> None:
+    """Mark a broadcast as sent."""
+    with _lock:
+        data = _load_json(SCHEDULED_BROADCASTS_FILE, [])
+        for broadcast in data:
+            if broadcast.get("id") == broadcast_id:
+                broadcast["sent"] = True
+                broadcast["sent_at"] = datetime.now(timezone.utc).isoformat()
+                break
+        _save_json(SCHEDULED_BROADCASTS_FILE, data)
+
+
+# =============================================================================
+# Statistics Helpers
+# =============================================================================
+
+def get_storage_stats() -> Dict[str, Any]:
+    """Get statistics about stored data."""
+    with _lock:
+        start_users = _load_json(START_USERS_CLICKS_FILE, {})
+        active_trials = _load_json(ACTIVE_TRIALS_FILE, {})
+        used_trials = _load_json(USED_TRIALS_FILE, {})
+        pending = _load_json(PENDING_FILE, {})
+        banned = _load_json(BANNED_USERS_FILE, {})
+        
+        # Count verified users
+        verified_count = sum(1 for v in pending.values() if v.get("status") == "verified" or v.get("step1_ok"))
+        
+        return {
+            "total_start_clicks": len(start_users),
+            "active_trials": len(active_trials),
+            "used_trials": len(used_trials),
+            "pending_verifications": len(pending),
+            "verified_users": verified_count,
+            "banned_users": len(banned),
+        }
+
+

@@ -239,9 +239,12 @@ def _try_api_key(base_url: str, ip: str, api_key: str) -> Optional[dict]:
 
 def check_ip_status(ip: str) -> tuple[bool, bool]:
     """
-    Check IP for VPN/proxy and blocked country in a single API call.
+    Check IP for VPN/TOR and blocked country in a single API call.
     Returns (is_vpn, is_blocked_country) tuple.
     This is more efficient than calling is_vpn_ip and is_blocked_country_ip separately.
+    
+    NOTE: Only VPN and TOR are blocked. Other proxy types (public proxy, web proxy,
+    data center, residential proxy, etc.) are NOT blocked per user request.
     """
     data = _ip2location_lookup(ip)
     if not data:
@@ -252,37 +255,25 @@ def check_ip_status(ip: str) -> tuple[bool, bool]:
     country_code = data.get("country_code", "").upper()
     is_blocked = country_code == BLOCKED_COUNTRY_CODE
     
-    # Check VPN/proxy status
+    # Check VPN/TOR status ONLY (not other proxy types)
     is_vpn = False
     
-    # Check top-level is_proxy flag (available in all plans)
-    if data.get("is_proxy") is True:
-        is_vpn = True
-    
     # Check detailed proxy object (available in Plus/Security plans)
-    if not is_vpn:
-        proxy = data.get("proxy")
-        if proxy and isinstance(proxy, dict):
-            proxy_indicators = [
-                proxy.get("is_vpn"),
-                proxy.get("is_tor"),
-                proxy.get("is_public_proxy"),
-                proxy.get("is_web_proxy"),
-                proxy.get("is_residential_proxy"),
-                proxy.get("is_data_center"),
-                proxy.get("is_consumer_privacy_network"),
-                proxy.get("is_enterprise_private_network"),
-                proxy.get("is_web_crawler"),
-            ]
-            if any(proxy_indicators):
-                is_vpn = True
+    # Only check is_vpn and is_tor - ignore other proxy indicators
+    proxy = data.get("proxy")
+    if proxy and isinstance(proxy, dict):
+        if proxy.get("is_vpn") is True:
+            is_vpn = True
+        if proxy.get("is_tor") is True:
+            is_vpn = True
     
     # Check proxy_type field if present (string value)
+    # Only block VPN and TOR types
     if not is_vpn:
         proxy_type = data.get("proxy_type")
         if proxy_type:
             proxy_type_upper = str(proxy_type).upper()
-            if proxy_type_upper in ["VPN", "TOR", "PUB", "WEB", "RES", "DCH", "CPN", "EPN", "SES"]:
+            if proxy_type_upper in ["VPN", "TOR"]:
                 is_vpn = True
     
     # Check proxy.proxy_type if nested
@@ -292,7 +283,7 @@ def check_ip_status(ip: str) -> tuple[bool, bool]:
             nested_proxy_type = proxy.get("proxy_type")
             if nested_proxy_type:
                 nested_type_upper = str(nested_proxy_type).upper()
-                if nested_type_upper in ["VPN", "TOR", "PUB", "WEB", "RES", "DCH", "CPN", "EPN", "SES"]:
+                if nested_type_upper in ["VPN", "TOR"]:
                     is_vpn = True
     
     return is_vpn, is_blocked
