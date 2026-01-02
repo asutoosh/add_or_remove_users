@@ -26,8 +26,8 @@ logger = logging.getLogger(__name__)
 # Load .env if present (for droplet: we typically use a .env file in the app directory)
 load_dotenv()
 
-IP2LOCATION_API_KEY = os.environ.get("IP2LOCATION_API_KEY", "")
-IP2LOCATION_API_KEY_2 = os.environ.get("IP2LOCATION_API_KEY_2", "")
+IPAPI_IS_API_KEY = os.environ.get("IPAPI_IS_API_KEY", "")
+IPAPI_IS_API_KEY_2 = os.environ.get("IPAPI_IS_API_KEY_2", "")
 # Blocked country code (e.g., "IN" for India, "PK" for Pakistan)
 # Set via environment variable, defaults to "PK" for testing
 BLOCKED_COUNTRY_CODE = os.environ.get("BLOCKED_COUNTRY_CODE", "PK").upper()
@@ -162,24 +162,24 @@ def get_client_ip() -> str:
     return request.remote_addr or "0.0.0.0"
 
 
-def _ip2location_lookup(ip: str) -> Optional[dict]:
+def _ipapi_is_lookup(ip: str) -> Optional[dict]:
     """
-    Call IP2Location.io to get geolocation and proxy info.
+    Call ipapi.is to get geolocation and proxy info.
     Uses load balancing between two API keys if both are configured.
-    Docs: https://www.ip2location.io/ip2location-documentation
+    Docs: https://ipapi.is/app/request-builder
     """
-    base_url = "https://api.ip2location.io/"
+    base_url = "https://api.ipapi.is/"
     
     # Build list of available API keys
     api_keys = []
-    if IP2LOCATION_API_KEY:
-        api_keys.append(IP2LOCATION_API_KEY)
-    if IP2LOCATION_API_KEY_2:
-        api_keys.append(IP2LOCATION_API_KEY_2)
+    if IPAPI_IS_API_KEY:
+        api_keys.append(IPAPI_IS_API_KEY)
+    if IPAPI_IS_API_KEY_2:
+        api_keys.append(IPAPI_IS_API_KEY_2)
     
     # If no keys configured, use keyless mode
     if not api_keys:
-        params = {"ip": ip, "format": "json"}
+        params = {"ip": ip}
         try:
             resp = requests.get(base_url, params=params, timeout=3)
             if not resp.ok:
@@ -196,8 +196,8 @@ def _ip2location_lookup(ip: str) -> Optional[dict]:
     key_index = hash(ip) % len(api_keys)
     selected_key = api_keys[key_index]
     
-    # Try primary key first
-    params = {"ip": ip, "format": "json", "key": selected_key}
+    # Try primary key first (ipapi.is uses 'key' query parameter)
+    params = {"ip": ip, "key": selected_key}
     try:
         resp = requests.get(base_url, params=params, timeout=3)
         if resp.ok:
@@ -224,7 +224,7 @@ def _ip2location_lookup(ip: str) -> Optional[dict]:
 
 def _try_api_key(base_url: str, ip: str, api_key: str) -> Optional[dict]:
     """Helper function to try a specific API key."""
-    params = {"ip": ip, "format": "json", "key": api_key}
+    params = {"ip": ip, "key": api_key}
     try:
         resp = requests.get(base_url, params=params, timeout=3)
         if not resp.ok:
@@ -243,64 +243,42 @@ def check_ip_status(ip: str) -> tuple[bool, bool]:
     Returns (is_vpn, is_blocked_country) tuple.
     This is more efficient than calling is_vpn_ip and is_blocked_country_ip separately.
     """
-    data = _ip2location_lookup(ip)
+    data = _ipapi_is_lookup(ip)
     if not data:
         # If API lookup fails, be conservative and don't block
         return False, False
     
-    # Check blocked country
-    country_code = data.get("country_code", "").upper()
+    # Check blocked country (ipapi.is stores country_code in location object)
+    location = data.get("location", {})
+    country_code = location.get("country_code", "").upper() if isinstance(location, dict) else ""
+    if not country_code:
+        # Fallback: try top-level country_code if location is not available
+        country_code = data.get("country_code", "").upper()
     is_blocked = country_code == BLOCKED_COUNTRY_CODE
     
-    # Check VPN/proxy status
+    # Check VPN/proxy status (ipapi.is uses top-level boolean fields)
     is_vpn = False
     
-    # Check top-level is_proxy flag (available in all plans)
-    if data.get("is_proxy") is True:
+    # Check VPN/proxy indicators from ipapi.is response
+    vpn_indicators = [
+        data.get("is_vpn"),
+        data.get("is_proxy"),
+        data.get("is_tor"),
+        data.get("is_datacenter"),
+        data.get("is_mobile"),  # Mobile proxies are often used for abuse
+        data.get("is_satellite"),  # Satellite connections can be proxies
+        data.get("is_crawler"),  # Crawlers might be blocked
+    ]
+    
+    if any(vpn_indicators):
         is_vpn = True
-    
-    # Check detailed proxy object (available in Plus/Security plans)
-    if not is_vpn:
-        proxy = data.get("proxy")
-        if proxy and isinstance(proxy, dict):
-            proxy_indicators = [
-                proxy.get("is_vpn"),
-                proxy.get("is_tor"),
-                proxy.get("is_public_proxy"),
-                proxy.get("is_web_proxy"),
-                proxy.get("is_residential_proxy"),
-                proxy.get("is_data_center"),
-                proxy.get("is_consumer_privacy_network"),
-                proxy.get("is_enterprise_private_network"),
-                proxy.get("is_web_crawler"),
-            ]
-            if any(proxy_indicators):
-                is_vpn = True
-    
-    # Check proxy_type field if present (string value)
-    if not is_vpn:
-        proxy_type = data.get("proxy_type")
-        if proxy_type:
-            proxy_type_upper = str(proxy_type).upper()
-            if proxy_type_upper in ["VPN", "TOR", "PUB", "WEB", "RES", "DCH", "CPN", "EPN", "SES"]:
-                is_vpn = True
-    
-    # Check proxy.proxy_type if nested
-    if not is_vpn:
-        proxy = data.get("proxy")
-        if proxy and isinstance(proxy, dict):
-            nested_proxy_type = proxy.get("proxy_type")
-            if nested_proxy_type:
-                nested_type_upper = str(nested_proxy_type).upper()
-                if nested_type_upper in ["VPN", "TOR", "PUB", "WEB", "RES", "DCH", "CPN", "EPN", "SES"]:
-                    is_vpn = True
     
     return is_vpn, is_blocked
 
 
 def is_blocked_country_ip(ip: str) -> bool:
     """
-    Use IP2Location.io to check if IP country_code matches the blocked country.
+    Use ipapi.is to check if IP country_code matches the blocked country.
     Blocked country is set via BLOCKED_COUNTRY_CODE environment variable.
     Note: For better performance, use check_ip_status() to combine with VPN check.
     """
@@ -310,7 +288,7 @@ def is_blocked_country_ip(ip: str) -> bool:
 
 def is_vpn_ip(ip: str) -> bool:
     """
-    Use IP2Location.io proxy fields to detect VPN / proxy.
+    Use ipapi.is proxy fields to detect VPN / proxy.
     Note: For better performance, use check_ip_status() to combine with country check.
     """
     is_vpn, _ = check_ip_status(ip)
@@ -940,7 +918,7 @@ ENABLE_DEBUG_IP = os.environ.get("ENABLE_DEBUG_IP", "0") == "1"
 @app.route("/debug-ip")
 def debug_ip() -> str:
     """
-    Temporary debug endpoint to check what IP2Location API returns.
+    Temporary debug endpoint to check what ipapi.is API returns.
 
     For security, this is DISABLED by default in production.
     Set ENABLE_DEBUG_IP=1 in the environment if you explicitly
@@ -950,20 +928,25 @@ def debug_ip() -> str:
         return "Not found", 404
 
     ip = get_client_ip()
-    data = _ip2location_lookup(ip)
+    data = _ipapi_is_lookup(ip)
 
     if not data:
         return f"API lookup failed for IP: {ip}", 500
 
-    # Format response for debugging
+    # Format response for debugging (ipapi.is response structure)
+    location = data.get("location", {})
     debug_info = {
         "ip": ip,
-        "country_code": data.get("country_code"),
-        "country_name": data.get("country_name"),
+        "country_code": location.get("country_code") if isinstance(location, dict) else data.get("country_code"),
+        "country_name": location.get("country") if isinstance(location, dict) else data.get("country_name"),
+        "is_vpn": data.get("is_vpn"),
         "is_proxy": data.get("is_proxy"),
-        "proxy": data.get("proxy"),
-        "proxy_type": data.get("proxy_type"),
-        "usage_type": data.get("usage_type"),
+        "is_tor": data.get("is_tor"),
+        "is_datacenter": data.get("is_datacenter"),
+        "is_mobile": data.get("is_mobile"),
+        "is_satellite": data.get("is_satellite"),
+        "is_crawler": data.get("is_crawler"),
+        "location": location,
         "full_response": data,
     }
 
