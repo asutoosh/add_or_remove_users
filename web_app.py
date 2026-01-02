@@ -26,8 +26,8 @@ logger = logging.getLogger(__name__)
 # Load .env if present (for droplet: we typically use a .env file in the app directory)
 load_dotenv()
 
-IP2LOCATION_API_KEY = os.environ.get("IP2LOCATION_API_KEY", "")
-IP2LOCATION_API_KEY_2 = os.environ.get("IP2LOCATION_API_KEY_2", "")
+IPAPI_API_KEY = os.environ.get("IPAPI_API_KEY", "")
+IPAPI_API_KEY_2 = os.environ.get("IPAPI_API_KEY_2", "")  # Optional backup key
 # Blocked country code (e.g., "IN" for India, "PK" for Pakistan)
 # Set via environment variable, defaults to "PK" for testing
 BLOCKED_COUNTRY_CODE = os.environ.get("BLOCKED_COUNTRY_CODE", "PK").upper()
@@ -162,136 +162,86 @@ def get_client_ip() -> str:
     return request.remote_addr or "0.0.0.0"
 
 
-def _ip2location_lookup(ip: str) -> Optional[dict]:
+def _ipapi_lookup(ip: str) -> Optional[dict]:
     """
-    Call IP2Location.io to get geolocation and proxy info.
+    Call ipapi.is to get geolocation and threat info.
     Uses load balancing between two API keys if both are configured.
-    Docs: https://www.ip2location.io/ip2location-documentation
+    Docs: https://ipapi.is/
     """
-    base_url = "https://api.ip2location.io/"
+    base_url = "https://api.ipapi.is"
     
     # Build list of available API keys
     api_keys = []
-    if IP2LOCATION_API_KEY:
-        api_keys.append(IP2LOCATION_API_KEY)
-    if IP2LOCATION_API_KEY_2:
-        api_keys.append(IP2LOCATION_API_KEY_2)
+    if IPAPI_API_KEY:
+        api_keys.append(IPAPI_API_KEY)
+    if IPAPI_API_KEY_2:
+        api_keys.append(IPAPI_API_KEY_2)
     
-    # If no keys configured, use keyless mode
+    # If no keys configured, cannot proceed
     if not api_keys:
-        params = {"ip": ip, "format": "json"}
-        try:
-            resp = requests.get(base_url, params=params, timeout=3)
-            if not resp.ok:
-                return None
-            data = resp.json()
-            if isinstance(data, dict) and "error" in data:
-                return None
-            return data
-        except Exception:
-            return None
+        logger.warning("No IPAPI_API_KEY configured - IP checks disabled")
+        return None
     
     # Load balancing: use hash of IP to consistently route to same key
-    # This distributes load evenly while ensuring same IP uses same key
     key_index = hash(ip) % len(api_keys)
-    selected_key = api_keys[key_index]
     
-    # Try primary key first
-    params = {"ip": ip, "format": "json", "key": selected_key}
-    try:
-        resp = requests.get(base_url, params=params, timeout=3)
-        if resp.ok:
-            data = resp.json()
-            # If API returned an error object, try fallback
-            if isinstance(data, dict) and "error" in data:
-                # Try fallback key if available
-                if len(api_keys) > 1:
-                    fallback_key = api_keys[(key_index + 1) % len(api_keys)]
-                    return _try_api_key(base_url, ip, fallback_key)
-                return None
-            return data
-    except Exception:
-        pass  # Will try fallback below
-    
-    # Fallback: try the other key if primary failed
-    if len(api_keys) > 1:
-        fallback_key = api_keys[(key_index + 1) % len(api_keys)]
-        return _try_api_key(base_url, ip, fallback_key)
+    for i in range(len(api_keys)):
+        current_key = api_keys[(key_index + i) % len(api_keys)]
+        params = {"q": ip, "key": current_key}
+        try:
+            resp = requests.get(base_url, params=params, timeout=5)
+            if resp.ok:
+                data = resp.json()
+                # Check for error response
+                if not (isinstance(data, dict) and "error" in data):
+                    return data
+        except Exception as e:
+            logger.warning(f"ipapi.is API call failed: {e}")
+            continue
     
     # Fail open: if the lookup fails, we won't block user purely on API failure.
     return None
 
 
-def _try_api_key(base_url: str, ip: str, api_key: str) -> Optional[dict]:
-    """Helper function to try a specific API key."""
-    params = {"ip": ip, "format": "json", "key": api_key}
-    try:
-        resp = requests.get(base_url, params=params, timeout=3)
-        if not resp.ok:
-            return None
-        data = resp.json()
-        if isinstance(data, dict) and "error" in data:
-            return None
-        return data
-    except Exception:
-        return None
-
-
 def check_ip_status(ip: str) -> tuple[bool, bool]:
     """
-    Check IP for VPN/TOR and blocked country in a single API call.
+    Check IP for VPN/TOR and blocked country using ipapi.is.
     Returns (is_vpn, is_blocked_country) tuple.
-    This is more efficient than calling is_vpn_ip and is_blocked_country_ip separately.
     
-    NOTE: Only VPN and TOR are blocked. Other proxy types (public proxy, web proxy,
-    data center, residential proxy, etc.) are NOT blocked per user request.
+    Blocks:
+    - VPN users (is_vpn)
+    - TOR exit nodes (is_tor)
+    - Blocked country (location.country_code matches BLOCKED_COUNTRY_CODE)
     """
-    data = _ip2location_lookup(ip)
+    data = _ipapi_lookup(ip)
     if not data:
         # If API lookup fails, be conservative and don't block
         return False, False
     
-    # Check blocked country
-    country_code = data.get("country_code", "").upper()
+    # Check blocked country from location object
+    location = data.get("location", {})
+    country_code = location.get("country_code", "").upper()
     is_blocked = country_code == BLOCKED_COUNTRY_CODE
     
-    # Check VPN/TOR status ONLY (not other proxy types)
+    # Check VPN and TOR
     is_vpn = False
     
-    # Check detailed proxy object (available in Plus/Security plans)
-    # Only check is_vpn and is_tor - ignore other proxy indicators
-    proxy = data.get("proxy")
-    if proxy and isinstance(proxy, dict):
-        if proxy.get("is_vpn") is True:
-            is_vpn = True
-        if proxy.get("is_tor") is True:
-            is_vpn = True
+    # Block VPN users
+    if data.get("is_vpn") is True:
+        is_vpn = True
+        logger.info(f"IP {ip} detected as VPN")
     
-    # Check proxy_type field if present (string value)
-    # Only block VPN and TOR types
-    if not is_vpn:
-        proxy_type = data.get("proxy_type")
-        if proxy_type:
-            proxy_type_upper = str(proxy_type).upper()
-            if proxy_type_upper in ["VPN", "TOR"]:
-                is_vpn = True
-    
-    # Check proxy.proxy_type if nested
-    if not is_vpn:
-        proxy = data.get("proxy")
-        if proxy and isinstance(proxy, dict):
-            nested_proxy_type = proxy.get("proxy_type")
-            if nested_proxy_type:
-                nested_type_upper = str(nested_proxy_type).upper()
-                if nested_type_upper in ["VPN", "TOR"]:
-                    is_vpn = True
+    # Block TOR exit nodes
+    if data.get("is_tor") is True:
+        is_vpn = True
+        logger.info(f"IP {ip} detected as TOR exit node")
     
     return is_vpn, is_blocked
 
 
 def is_blocked_country_ip(ip: str) -> bool:
     """
-    Use IP2Location.io to check if IP country_code matches the blocked country.
+    Check if IP country_code matches the blocked country using ipapi.is.
     Blocked country is set via BLOCKED_COUNTRY_CODE environment variable.
     Note: For better performance, use check_ip_status() to combine with VPN check.
     """
@@ -301,7 +251,7 @@ def is_blocked_country_ip(ip: str) -> bool:
 
 def is_vpn_ip(ip: str) -> bool:
     """
-    Use IP2Location.io proxy fields to detect VPN / proxy.
+    Use ipapi.is to detect VPN/TOR.
     Note: For better performance, use check_ip_status() to combine with country check.
     """
     is_vpn, _ = check_ip_status(ip)

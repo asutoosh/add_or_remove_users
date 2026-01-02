@@ -48,8 +48,8 @@ load_dotenv()
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 TRIAL_CHANNEL_ID = int(os.environ.get("TRIAL_CHANNEL_ID", "0"))
 API_SECRET = os.environ.get("API_SECRET", "")
-IP2LOCATION_API_KEY = os.environ.get("IP2LOCATION_API_KEY", "")
-IP2LOCATION_API_KEY_2 = os.environ.get("IP2LOCATION_API_KEY_2", "")
+IPAPI_API_KEY = os.environ.get("IPAPI_API_KEY", "")
+IPAPI_API_KEY_2 = os.environ.get("IPAPI_API_KEY_2", "")  # Optional backup key
 BLOCKED_COUNTRY_CODE = os.environ.get("BLOCKED_COUNTRY_CODE", "PK").upper()
 BLOCKED_PHONE_COUNTRY_CODE = os.environ.get("BLOCKED_PHONE_COUNTRY_CODE", "+91")
 GIVEAWAY_CHANNEL_URL = os.environ.get("GIVEAWAY_CHANNEL_URL", "https://t.me/Freya_Trades")
@@ -309,28 +309,24 @@ def require_telegram_auth(f):
 
 
 # =============================================================================
-# IP2Location API
+# ipapi.is API
 # =============================================================================
 
-def _ip2location_lookup(ip: str) -> Optional[dict]:
-    """Call IP2Location.io API with load balancing."""
-    base_url = "https://api.ip2location.io/"
+def _ipapi_lookup(ip: str) -> Optional[dict]:
+    """
+    Call ipapi.is API to get IP geolocation and threat data.
+    Docs: https://ipapi.is/
+    """
+    base_url = "https://api.ipapi.is"
     
     api_keys = []
-    if IP2LOCATION_API_KEY:
-        api_keys.append(IP2LOCATION_API_KEY)
-    if IP2LOCATION_API_KEY_2:
-        api_keys.append(IP2LOCATION_API_KEY_2)
+    if IPAPI_API_KEY:
+        api_keys.append(IPAPI_API_KEY)
+    if IPAPI_API_KEY_2:
+        api_keys.append(IPAPI_API_KEY_2)
     
     if not api_keys:
-        # Keyless mode
-        params = {"ip": ip, "format": "json"}
-        try:
-            resp = requests.get(base_url, params=params, timeout=3)
-            if resp.ok:
-                return resp.json()
-        except Exception:
-            pass
+        logger.warning("No IPAPI_API_KEY configured - IP checks disabled")
         return None
     
     # Load balance by IP hash
@@ -338,14 +334,16 @@ def _ip2location_lookup(ip: str) -> Optional[dict]:
     
     for i in range(len(api_keys)):
         current_key = api_keys[(key_index + i) % len(api_keys)]
-        params = {"ip": ip, "format": "json", "key": current_key}
+        params = {"q": ip, "key": current_key}
         try:
-            resp = requests.get(base_url, params=params, timeout=3)
+            resp = requests.get(base_url, params=params, timeout=5)
             if resp.ok:
                 data = resp.json()
+                # Check for error response
                 if not (isinstance(data, dict) and "error" in data):
                     return data
-        except Exception:
+        except Exception as e:
+            logger.warning(f"ipapi.is API call failed: {e}")
             continue
     
     return None
@@ -353,37 +351,38 @@ def _ip2location_lookup(ip: str) -> Optional[dict]:
 
 def check_ip_status(ip: str) -> Tuple[bool, bool, bool, str]:
     """
-    Check IP for VPN/proxy and blocked country.
+    Check IP for VPN/TOR and blocked country using ipapi.is.
     Returns: (is_vpn, is_blocked_country, api_failed, country_code)
+    
+    Blocks:
+    - VPN users (is_vpn)
+    - TOR exit nodes (is_tor)
+    - Blocked country (location.country_code matches BLOCKED_COUNTRY_CODE)
     """
-    data = _ip2location_lookup(ip)
+    data = _ipapi_lookup(ip)
     
     if not data:
         # API failed - fail-open
-        logger.warning(f"IP2Location API failed for {ip}")
+        logger.warning(f"ipapi.is API failed for {ip}")
         return False, False, True, ""
     
-    # Check country
-    country_code = data.get("country_code", "").upper()
+    # Check country from location object
+    location = data.get("location", {})
+    country_code = location.get("country_code", "").upper()
     is_blocked = country_code == BLOCKED_COUNTRY_CODE
     
-    # Check VPN/TOR ONLY (not other proxy types like public proxy, web proxy, residential)
-    # This matches web_app.py behavior - user requested only VPN detection
+    # Check VPN and TOR
     is_vpn = False
     
-    proxy = data.get("proxy")
-    if proxy and isinstance(proxy, dict):
-        # Only block VPN and TOR - ignore all other proxy types
-        if proxy.get("is_vpn") is True:
-            is_vpn = True
-        if proxy.get("is_tor") is True:
-            is_vpn = True
+    # Block VPN users
+    if data.get("is_vpn") is True:
+        is_vpn = True
+        logger.info(f"IP {ip} detected as VPN")
     
-    # Check proxy_type field - only VPN and TOR
-    if not is_vpn:
-        proxy_type = data.get("proxy_type")
-        if proxy_type and str(proxy_type).upper() in ["VPN", "TOR"]:
-            is_vpn = True
+    # Block TOR exit nodes
+    if data.get("is_tor") is True:
+        is_vpn = True
+        logger.info(f"IP {ip} detected as TOR exit node")
     
     return is_vpn, is_blocked, False, country_code
 
