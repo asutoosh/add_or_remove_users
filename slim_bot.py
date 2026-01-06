@@ -265,7 +265,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # Check if user already used trial
     if has_used_trial(user.id):
         await update.message.reply_text(
-            "You have already used your free trial.\n\n"
+            "You have already used your preview access.\n\n"
             f"🎁 Join giveaways: {GIVEAWAY_CHANNEL_URL}\n"
             f"💬 Upgrade: {SUPPORT_CONTACT}",
         )
@@ -363,7 +363,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /help command."""
     await update.message.reply_text(
         "📚 **Commands & Help**\n\n"
-        "/start - Start your free trial\n"
+        "/start - Get your access\n"
         "/help - This help message\n"
         "/faq - Frequently asked questions\n"
         "/about - About Freya Quinn\n"
@@ -435,7 +435,7 @@ async def start_trial_fallback_callback(update: Update, context: ContextTypes.DE
     # Check if already used trial
     if has_used_trial(user.id):
         await query.edit_message_text(
-            "You have already used your free trial.\n\n"
+            "You have already used your preview access.\n\n"
             f"🎁 Join giveaways: {GIVEAWAY_CHANNEL_URL}\n"
             f"💬 Upgrade: {SUPPORT_CONTACT}",
         )
@@ -536,7 +536,7 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     # Check if user has already used trial
     if has_used_trial(user.id):
         await update.message.reply_text(
-            "You have already used your free trial.",
+            "You have already used your preview access.",
             reply_markup=ReplyKeyboardRemove(),
         )
         return
@@ -635,7 +635,7 @@ async def retry_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     # 1. Check if trial already used
     if has_used_trial(user.id):
         await update.message.reply_text(
-            "You have already used your free trial.",
+            "You have already used your preview access.",
             reply_markup=ReplyKeyboardRemove(),
         )
         return
@@ -1383,8 +1383,8 @@ async def trial_chat_member_update(update: Update, context: ContextTypes.DEFAULT
         try:
             await context.bot.send_message(
                 chat_id=user.id,
-                text=f"👋 You have left the trial channel.\n\n"
-                     f"Your free trial has been marked as consumed.\n\n"
+                text=f"👋 You have left the channel.\n\n"
+                     f"Your preview access has been marked as used.\n\n"
                      f"📝 Feedback: {FEEDBACK_FORM_URL}\n"
                      f"🎁 Giveaways: {GIVEAWAY_CHANNEL_URL}\n"
                      f"💬 Upgrade: {SUPPORT_CONTACT}",
@@ -1470,7 +1470,7 @@ async def trial_reminder_5day_1(context: ContextTypes.DEFAULT_TYPE) -> None:
 async def trial_reminder_5day_3(context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = context.job.data["user_id"]
     await _send_reminder(context, user_id,
-        "⏱ 3 days (72 hours) have passed, 2 days remaining in your 5-day trial.\n\n"
+        "⏱ 3 days (72 hours) have passed, 2 days remaining in your preview access.\n\n"
         f"💬 Questions about upgrading? Contact {SUPPORT_CONTACT}",
         "72h_reminder_5day"
     )
@@ -1511,8 +1511,8 @@ async def trial_end(context: ContextTypes.DEFAULT_TYPE) -> None:
         await context.bot.send_message(
             chat_id=user_id,
             text=(
-                "Your trial just ended 🕊\n\n"
-                "Thank you for testing Freya's Flirty Profits for 3 days.\n\n"
+                "Your preview access just ended 🕊\n\n"
+                "Thank you for previewing Freya's Flirty Profits!\n\n"
                 "If you liked the structure of the signals and want to keep going, here are your options:\n\n"
                 "✅ 30-Day Premium Membership\n"
                 "– Full access to all signals\n"

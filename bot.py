@@ -328,7 +328,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # If user already consumed their free trial, don't allow another one
     if has_used_trial(user.id):
         await update.message.reply_text(
-            "You have already used your free 3-day trial once.\n\n"
+            "You have already used your preview access.\n\n"
             "🎁 For more chances, you can join our giveaway channel:\n"
             f"{GIVEAWAY_CHANNEL_URL}\n\n"
             f"💬 Or DM {SUPPORT_CONTACT} to upgrade to the premium signals.",
@@ -353,10 +353,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 total_days = int(total_hours / 24)
                 
                 await update.message.reply_text(
-                    f"✅ You are currently in your {total_days}-day free trial!\n\n"
+                    f"✅ Your {total_days}-day preview access is active!\n\n"
                     f"⏱ Time elapsed: {elapsed_rounded} hours\n"
                     f"⏳ Time remaining: {remaining_rounded} hours\n\n"
-                    "You will receive reminders as your trial approaches the end.\n\n"
+                    "You will receive reminders as your access period approaches the end.\n\n"
                     f"💬 Questions? DM {SUPPORT_CONTACT}",
                 )
                 return
@@ -426,7 +426,7 @@ async def start_trial_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     # Check if user already consumed trial AND reserve it atomically
     if not atomic_check_and_reserve_trial(tg_id):
         await query.edit_message_text(
-            "You have already used your free 3-day trial once.\n\n"
+            "You have already used your preview access.\n\n"
             "🎁 For more chances, you can join our giveaway channel:\n"
             f"{GIVEAWAY_CHANNEL_URL}\n\n"
             f"💬 Or DM {SUPPORT_CONTACT} to upgrade to the premium signals.",
@@ -464,10 +464,10 @@ async def start_trial_callback(update: Update, context: ContextTypes.DEFAULT_TYP
                 total_days = int(total_hours / 24)
                 
                 await query.edit_message_text(
-                    f"✅ You are currently in your {total_days}-day free trial!\n\n"
+                    f"✅ Your {total_days}-day preview access is active!\n\n"
                     f"⏱ Time elapsed: {elapsed_rounded} hours\n"
                     f"⏳ Time remaining: {remaining_rounded} hours\n\n"
-                    "You will receive reminders as your trial approaches the end.\n\n"
+                    "You will receive reminders as your access period approaches the end.\n\n"
                     f"💬 Questions? DM {SUPPORT_CONTACT}",
                 )
                 return
@@ -577,7 +577,7 @@ async def continue_verification_callback(update: Update, context: ContextTypes.D
         logger.debug(f"No valid verification data found for tg_id={tg_id}")
         await query.edit_message_text(
             "We could not find your web verification.\n"
-            "Please tap 'Get Free Trial' again and complete the web step first.\n\n"
+            "Please tap '🚀 Access Now' again and complete the web step first.\n\n"
             "⚠️ Make sure you:\n"
             "1. Open the verification page\n"
             "2. Turn off VPN/Proxy\n"
@@ -658,16 +658,16 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     """Help command explaining the bot and verification process."""
     help_text = (
         "🤖 *About This Bot*\n\n"
-        "This bot gives you access to premium trading signals with a free 3-day trial.\n\n"
+        "This bot gives you access to premium trading signals with a preview access period.\n\n"
         "📋 *Available Commands:*\n"
-        "• /start - Start the bot and begin free trial\n"
+        "• /start - Start the bot and get access\n"
         "• /help - Help and commands list\n"
         "• /faq - Frequently asked questions\n"
         "• /about - About this bot\n"
         "• /support - Contact support\n\n"
         "🔐 *Verification Process:*\n\n"
         "*Step 1: Initial Verification*\n"
-        "1. Click /start and tap 'Get Free Trial'\n"
+        "1. Click /start and tap '🚀 Access Now'\n"
         "2. Turn off VPN/Proxy before proceeding\n"
         "3. Fill in your details (name, country)\n"
         "4. Submit the form\n\n"
@@ -675,9 +675,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "1. Tap 'Continue verification'\n"
         "2. Share your phone number when prompted\n"
         "   _(We only use this to prevent bots)_\n"
-        "3. You'll receive your trial invite link\n"
+        "3. You'll receive your invite link\n"
         "4. Join the channel to access premium signals\n\n"
-        "✅ That's it! Your 3-day trial starts when you join."
+        "✅ That's it! Your access starts when you join."
     )
     await update.message.reply_text(help_text, parse_mode="Markdown")
 
@@ -696,8 +696,8 @@ async def faq_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     
     faq_text = (
         "❓ *Frequently Asked Questions*\n\n"
-        "1️⃣ *How many days can I use the free trial?*\n"
-        f"   You can use the free trial for {trial_days}. {trial_reason}\n\n"
+        "1️⃣ *How many days can I use the preview access?*\n"
+        f"   You get access for {trial_days}. {trial_reason}\n\n"
         "2️⃣ *Can I delete my information later?*\n"
         "   Yes, absolutely! You can request deletion of your information at any time.\n\n"
         "3️⃣ *Why do you need my phone number?*\n"
@@ -721,7 +721,7 @@ async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     about_text = (
         "ℹ️ *About This Bot*\n\n"
         "This bot helps manage access to premium content and services through a secure "
-        "verification process. We provide a free trial period so you can experience our "
+        "verification process. We provide a preview access period so you can experience our "
         "premium features before committing to a paid plan.\n\n"
         "Our verification system ensures that only legitimate users can access premium "
         "content, helping us maintain quality and prevent abuse.\n\n"
@@ -1768,10 +1768,10 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 
                 logger.warning(f"User {user.id} tried to share phone but already has active trial")
                 await update.message.reply_text(
-                    f"✅ You are already in your {total_days}-day free trial!\n\n"
+                    f"✅ Your {total_days}-day preview access is already active!\n\n"
                     f"⏱ Time elapsed: {elapsed_rounded} hours\n"
                     f"⏳ Time remaining: {remaining_rounded} hours\n\n"
-                    "No need to verify again - you're already in the trial channel!",
+                    "No need to verify again - you're already in the channel!",
                     reply_markup=ReplyKeyboardRemove(),  # Remove the keyboard
                 )
                 return
@@ -2387,8 +2387,8 @@ async def trial_reminder_5day_3(context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info(f"trial_reminder_5day_3 job executing for user {user_id}")
     message = (
         "-----------------------------\n\n"
-        "⏱ 3 days (72 hours) have passed, 2 days remaining in your 5-day trial.\n\n"
-        f"💬 Want to continue after trial? Contact {SUPPORT_CONTACT}\n\n"
+        "⏱ 3 days (72 hours) have passed, 2 days remaining in your preview access.\n\n"
+        f"💬 Want to continue after? Contact {SUPPORT_CONTACT}\n\n"
         "-----------------------------"
     )
     await _send_trial_reminder(context, user_id, message, reminder_name="72h_reminder_5day")
@@ -2446,8 +2446,8 @@ async def trial_end(context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         message = (
             "-----------------------------\n\n"
-            "Your trial just ended 🕊\n\n"
-            "Thank you for testing Freya's Flirty Profits for 3 days.\n\n"
+            "Your preview access just ended 🕊\n\n"
+            "Thank you for previewing Freya's Flirty Profits!\n\n"
             "If you liked the structure of the signals and want to keep going, here are your options:\n\n"
             "✅ 30-Day Premium Membership\n"
             "– Full access to all signals\n"

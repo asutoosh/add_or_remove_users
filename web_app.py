@@ -263,7 +263,7 @@ TRIAL_PAGE = """
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Free Trial Verification</title>
+  <title>Access Verification</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
@@ -355,7 +355,7 @@ TRIAL_PAGE = """
 </head>
 <body>
   <div class="card">
-    <h2>Free Trial Verification</h2>
+    <h2>Access Verification</h2>
     <p>{{ message }}</p>
     {% if show_form %}
     <form method="post" id="trial-form" onsubmit="return validateForm(event)">
@@ -651,7 +651,7 @@ TRIAL_PAGE = """
             // Show message and close Web App
             var card = document.querySelector('.card');
             if (card) {
-              card.innerHTML = '<h2>Free Trial Verification</h2><p>✅ You have already passed Step 1 verification!<br><br>Please close this window and tap \'Continue verification\' button in Telegram to proceed with Step 2.</p>';
+              card.innerHTML = '<h2>Access Verification</h2><p>✅ You have already passed Step 1 verification!<br><br>Please close this window and tap \'Continue verification\' button in Telegram to proceed with Step 2.</p>';;
             }
             
             // Close Web App after 3 seconds
@@ -932,7 +932,7 @@ def trial() -> str:
             # FIRST: Check if user has already used a trial (before VPN check)
             if has_used_trial(tg_id):
                 return _render(
-                    "You have already used your free 3-day trial once.\n\n"
+                    "You have already used your preview access.\n\n"
                     "🎁 For more chances, you can join our giveaway channel:\n"
                     f"{GIVEAWAY_CHANNEL_URL}\n\n"
                     f"💬 Or DM {SUPPORT_CONTACT} to upgrade to the premium signals.",
@@ -961,7 +961,7 @@ def trial() -> str:
                         total_days = int(total_hours / 24)
                         
                         return _render(
-                            f"✅ You are currently in your {total_days}-day free trial!\n\n"
+                            f"✅ Your {total_days}-day preview access is active!\n\n"
                             f"⏱ Time elapsed: {elapsed_rounded} hours\n"
                             f"⏳ Time remaining: {remaining_rounded} hours\n\n"
                             "Please close this window and go back to Telegram.\n\n"
@@ -1025,7 +1025,7 @@ def trial() -> str:
     if not tg_id_param or not tg_id_param.isdigit():
         return _render(
             "Error: Could not verify your Telegram account. Please make sure you opened this page from Telegram and try again. "
-            "If the problem persists, close this window and tap 'Get Free Trial' again.",
+            "If the problem persists, close this window and tap '🚀 Access Now' again.",
             show_form=True,
         )
     
@@ -1034,7 +1034,7 @@ def trial() -> str:
     # FIRST: Check if user has already used a trial (before VPN check)
     if has_used_trial(tg_id):
         return _render(
-            "You have already used your free 3-day trial once.\n\n"
+            "You have already used your preview access.\n\n"
             "🎁 For more chances, you can join our giveaway channel:\n"
             f"{GIVEAWAY_CHANNEL_URL}\n\n"
             f"💬 Or DM {SUPPORT_CONTACT} to upgrade to the premium signals.",
@@ -1062,7 +1062,7 @@ def trial() -> str:
                 total_days = int(total_hours / 24)
                 
                 return _render(
-                    f"✅ You are currently in your {total_days}-day free trial!\n\n"
+                    f"✅ Your {total_days}-day preview access is active!\n\n"
                     f"⏱ Time elapsed: {elapsed_rounded} hours\n"
                     f"⏳ Time remaining: {remaining_rounded} hours\n\n"
                     "Please close this window and go back to Telegram.\n\n"

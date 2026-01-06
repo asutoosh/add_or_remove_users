@@ -687,7 +687,7 @@ def api_trial_invite():
     if has_used_trial(tg_id):
         return jsonify({
             "success": False,
-            "error": "You have already used your free trial",
+            "error": "You have already used your preview access",
         })
     
     # Check if already has active trial
@@ -832,7 +832,7 @@ def trial_page():
 <html lang="en">
 <head>
     <meta charset="utf-8">
-    <title>Free Trial Verification</title>
+    <title>Access Verification</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
         :root {{
@@ -935,7 +935,7 @@ def trial_page():
 <body>
     <div class="card">
         <div id="form-content">
-            <h2>Free Trial Verification</h2>
+            <h2>Access Verification</h2>
             <p>Complete this form to verify your eligibility.</p>
             <form id="vform">
                 <input type="hidden" id="tg_id" value="{tg_id}">
